@@ -216,3 +216,23 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ============================================================
+# node-gui-macro 프로젝트 산출물 / 사용자 데이터
+# ============================================================
+# 빌드 중간물 + 번들 Tesseract(수백 MB) — README '재빌드' 절 참고해 로컬에서 준비
+_build/
+# 빌드 결과(Editor.exe, ImgMacro.exe, Snip.exe, ImgMacro.zip)
+release/
+# 디버그 스크린샷(--save-debug)
+debug/
+# 캡처한 템플릿 이미지(사용자 데이터) — 폴더는 .gitkeep 으로 유지
+templates/*.png
+templates/*.jpg
+templates/*.bmp
+# 실행/캡처 임시 파일
+_run.json
+_snip_result.json
+_selftest_result.txt
+# GUI 에디터가 저장한 흐름 파일은 사용자별이라 기본 제외(원하면 주석 처리)
+# *.json

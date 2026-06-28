@@ -1,0 +1,10 @@
+# 이미지/텍스트 인식 클릭 매크로 의존성
+opencv-python>=4.8        # 이미지 템플릿 매칭 (유사도 계산)
+numpy>=1.24               # 배열 연산
+mss>=9.0                  # 빠른 화면 캡처 (멀티모니터 지원)
+pyautogui>=0.9.54         # 마우스 클릭 / 이동
+pynput>=1.7               # 전역 단축키(비상 정지) 리스너
+PyYAML>=6.0               # config.yaml 파싱
+Pillow>=10.0              # 이미지 처리 보조
+dearpygui>=1.11           # 노드 그래프 GUI 에디터(editor.py)
+pytesseract>=0.3.10       # OCR(텍스트 인식) - 별도로 Tesseract 엔진 설치 필요(README 참고)

@@ -1,0 +1,53 @@
+# =====================================================================
+# ImgMacro 설정 파일
+# 페이즈는 위에서부터 순서대로 실행됩니다.
+#   각 페이즈:  대상 인식 -> 클릭 -> 사라짐 검증 -> 다음 페이즈
+#   action: end 페이즈는 대상을 인식하면 매크로를 종료합니다.
+# =====================================================================
+
+settings:
+  similarity: 0.95          # 이미지 매칭 임계값 (0.95 = 95% 유사도)
+  multiscale: true          # 배율(125%/150%)이 다른 PC에서도 이미지 인식되게 여러 크기로 매칭
+  # image_scales: [1.0, 1.25, 1.5, 1.75, 2.0, 0.8, 0.67, 0.5]  # 멀티스케일 배율(기본값)
+  ocr_confidence: 0.80      # 텍스트 매칭 임계값 (문구 유사도)
+  ocr_lang: "kor+eng"       # OCR 언어 (한글+영문)
+  ocr_scale: 2.0            # OCR 인식 정확도용 확대 배율 (작은 글씨일수록 크게)
+  ocr_psm: 6                # 페이지 분할: 6=균일블록(권장), 11=흩어진 텍스트. 폴백: [6, 11]
+  search_interval: 0.4      # 인식 재시도 간격(초)
+  find_timeout: 30          # 대상 인식 최대 대기(초)
+  disappear_timeout: 10     # 클릭 후 사라짐 대기(초)
+  post_click_delay: 0.5     # 클릭 직후 검증 시작 전 대기(초)
+  max_click_retries: 3      # 사라지지 않을 때 재클릭 횟수
+  move_duration: 0.15       # 마우스 이동 시간(초)
+  monitor: 1                # 캡처 모니터 (1=주모니터). `--list-monitors`로 확인
+  stop_key: "f12"           # 비상 정지 단축키
+  on_fail: "abort"          # 페이즈 실패 시: abort(중단) | skip(건너뜀)
+  # tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"  # 필요시 경로 지정
+
+phases:
+  # --- 예시 1) 이미지 템플릿으로 버튼 인식 후 클릭 ---
+  - name: "시작 버튼"
+    type: image
+    target: "templates/start_button.png"   # snip.py 로 미리 캡처해 둔 이미지
+    verify_disappear: true                  # 클릭 후 이 버튼이 사라지면 통과
+
+  # --- 예시 2) 텍스트(OCR)로 "확인" 글자 인식 후 클릭 ---
+  - name: "확인 클릭"
+    type: text
+    target: "확인"
+    ocr_confidence: 0.85
+    verify_disappear: true
+
+  # --- 예시 3) 특정 영역에서만 텍스트 검색 (빠르고 정확) ---
+  - name: "다음 단계"
+    type: text
+    target: "다음"
+    region: [800, 600, 400, 200]    # [x, y, 폭, 높이] (모니터 좌상단 기준)
+    verify_disappear: true
+
+  # --- 종료 페이즈: 이 이미지가 보이면 매크로 종료 ---
+  - name: "완료 감지"
+    type: image
+    target: "templates/done.png"
+    action: end
+    click_on_end: false   # 종료 시 클릭이 필요하면 true

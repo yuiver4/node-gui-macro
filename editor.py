@@ -62,6 +62,7 @@ class Editor:
         self.end_counter = 1
         self.loop_counter = 1
         self.delay_counter = 1
+        self.move_counter = 1
         self.nodes = {}           # nid -> {id,type,node_tag,target,region}
         self.links = {}           # link_id -> (src_attr, dst_attr)
         self.out_link = {}        # src_attr -> link_id (출력당 1개 강제)
@@ -118,8 +119,7 @@ class Editor:
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="캡처", width=80,
                                    callback=self._capture, user_data=nid)
-                    lbl = os.path.basename(data.get("target", "")) if not is_text else ""
-                    dpg.add_text(lbl or "(미캡처)", tag=f"{nid}.imglabel")
+                    dpg.add_text("", tag=f"{nid}.imglabel")
             # 텍스트 행
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static,
                                     tag=f"{nid}.txtrow"):
@@ -138,16 +138,25 @@ class Editor:
                                          min_value=0.5, max_value=1.0,
                                          default_value=float(dft), format="%.2f")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_checkbox(label="클릭 후 사라짐 확인", tag=f"{nid}.verify",
-                                 default_value=data.get("verify_disappear", True))
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(label="클릭함", tag=f"{nid}.click",
+                                     default_value=data.get("click", True))
+                    dpg.add_checkbox(label="사라짐확인", tag=f"{nid}.verify",
+                                     default_value=data.get("verify_disappear", True))
+                    dpg.add_text("랜덤±")
+                    dpg.add_input_int(tag=f"{nid}.rand", width=58, step=0,
+                                      default_value=int(data.get("click_random", 0) or 0))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
-                    dpg.add_text("제한(초)")
-                    dpg.add_input_float(tag=f"{nid}.timeout", width=64, step=0,
+                    dpg.add_text("제한")
+                    dpg.add_input_float(tag=f"{nid}.timeout", width=52, step=0,
                                         default_value=float(data.get("find_timeout") or 30),
                                         format="%.0f")
+                    dpg.add_text("간격")
+                    dpg.add_input_float(tag=f"{nid}.scan", width=48, step=0, format="%.1f",
+                                        default_value=float(data.get("scan_interval") or 0))
                     dpg.add_text("재클릭")
-                    dpg.add_input_int(tag=f"{nid}.retries", width=64, step=0,
+                    dpg.add_input_int(tag=f"{nid}.retries", width=48, step=0,
                                       default_value=int(data.get("max_click_retries") or 3))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
@@ -165,7 +174,26 @@ class Editor:
                            "target": data.get("target", "") if not is_text else "",
                            "region": data.get("region")}
         self._toggle_match(None, match_label, nid)
+        self._update_imglabel(nid)
         return nid
+
+    def _update_imglabel(self, nid):
+        """이미지 타겟 상태 표시: 정상=초록 파일명, 없음=빨강 '이미지 없음', 미지정=회색."""
+        tag = f"{nid}.imglabel"
+        if not dpg.does_item_exist(tag):
+            return
+        tgt = self.nodes.get(nid, {}).get("target", "")
+        if not tgt:
+            dpg.set_value(tag, "(미캡처)")
+            dpg.configure_item(tag, color=(170, 170, 170))
+            return
+        path = tgt if os.path.isabs(tgt) else os.path.join(BASE, tgt)
+        if os.path.exists(path):
+            dpg.set_value(tag, os.path.basename(tgt))
+            dpg.configure_item(tag, color=(120, 220, 120))
+        else:
+            dpg.set_value(tag, "이미지 없음")
+            dpg.configure_item(tag, color=(255, 80, 80))
 
     def add_end_node(self, data=None, pos=None):
         data = data or {}
@@ -214,18 +242,37 @@ class Editor:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
                     dpg.add_text("대기(초)")
-                    dpg.add_input_float(tag=f"{nid}.seconds", width=90, step=0,
-                                        format="%.1f",
+                    dpg.add_input_float(tag=f"{nid}.seconds", width=64, step=0, format="%.1f",
                                         default_value=float(data.get("seconds", 1.0) or 0))
+                    dpg.add_text("~")
+                    dpg.add_input_float(tag=f"{nid}.seconds_max", width=64, step=0, format="%.1f",
+                                        default_value=float(data.get("seconds_max", 0) or 0))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("최대>0이면 둘 사이 랜덤", color=(150, 150, 150))
             with dpg.node_attribute(tag=f"{nid}.next", attribute_type=dpg.mvNode_Attr_Output):
                 dpg.add_text("다음 >")
         self.nodes[nid] = {"id": nid, "type": "delay", "node_tag": nid}
         return nid
 
+    def add_move_node(self, data=None, pos=None):
+        data = data or {}
+        nid = data.get("id") or f"move{self.move_counter}"
+        self.move_counter += 1
+        with dpg.node(label="마우스 이동", tag=nid, pos=pos or self._new_pos(), parent="editor"):
+            with dpg.node_attribute(tag=f"{nid}.in", attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("이전")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("화면(대상) 중앙으로 이동")
+            with dpg.node_attribute(tag=f"{nid}.next", attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("다음 >")
+        self.nodes[nid] = {"id": nid, "type": "move", "node_tag": nid}
+        return nid
+
     def _add_node(self, kind):
         """우클릭 메뉴/메뉴바에서 노드 추가."""
         {"phase": self.add_phase_node, "end": self.add_end_node,
-         "loop": self.add_loop_node, "delay": self.add_delay_node}[kind]()
+         "loop": self.add_loop_node, "delay": self.add_delay_node,
+         "move": self.add_move_node}[kind]()
         if dpg.does_item_exist("addmenu"):
             dpg.configure_item("addmenu", show=False)
 
@@ -391,9 +438,9 @@ class Editor:
             except Exception:
                 pass
             self.nodes[nid]["target"] = path
-            dpg.set_value(f"{nid}.imglabel", os.path.basename(path))
             dpg.set_value(f"{nid}.match", "이미지")
             self._toggle_match(None, "이미지", nid)
+            self._update_imglabel(nid)
 
     def _capture_region(self, sender, app_data, user_data):
         nid = user_data
@@ -440,8 +487,11 @@ class Editor:
                     "target": n.get("target", "") if is_img else dpg.get_value(f"{nid}.text"),
                     "region": n.get("region"),
                     "verify_disappear": dpg.get_value(f"{nid}.verify"),
+                    "click": dpg.get_value(f"{nid}.click"),
                     "find_timeout": dpg.get_value(f"{nid}.timeout"),
+                    "scan_interval": (dpg.get_value(f"{nid}.scan") or None),
                     "max_click_retries": dpg.get_value(f"{nid}.retries"),
+                    "click_random": int(dpg.get_value(f"{nid}.rand")),
                 })
                 if is_img:
                     entry["similarity"] = thr
@@ -455,8 +505,12 @@ class Editor:
                 entry["name"] = f"반복 {cnt}회"
             elif n["type"] == "delay":
                 secs = round(float(dpg.get_value(f"{nid}.seconds")), 2)
+                smax = round(float(dpg.get_value(f"{nid}.seconds_max")), 2)
                 entry["seconds"] = secs
-                entry["name"] = f"딜레이 {secs}초"
+                entry["seconds_max"] = smax
+                entry["name"] = (f"딜레이 {secs}~{smax}초" if smax > secs else f"딜레이 {secs}초")
+            elif n["type"] == "move":
+                entry["name"] = "마우스 이동"
             nodes.append(entry)
         links = []
         for lid, (src, dst) in self.links.items():
@@ -486,6 +540,7 @@ class Editor:
         self.end_counter = 1
         self.loop_counter = 1
         self.delay_counter = 1
+        self.move_counter = 1
         if dpg.does_item_exist("keymaprows"):
             dpg.delete_item("keymaprows", children_only=True)
         self.km_rows.clear()
@@ -510,6 +565,8 @@ class Editor:
                 self.add_loop_node(n, pos)
             elif t == "delay":
                 self.add_delay_node(n, pos)
+            elif t == "move":
+                self.add_move_node(n, pos)
         if "start" not in self.nodes:
             self.add_start_node()
         # 링크 복원
@@ -552,37 +609,58 @@ class Editor:
             dpg.set_value("set.target_label",
                           f"대상: {self.target_exe} | {self.target_title[:24]}")
 
-    # ---------------------------------------------------------------- 파일 다이얼로그
-    def _on_save_file(self, sender, app_data):
-        path = app_data["file_path_name"]
-        if not path.lower().endswith(".json"):
-            path += ".json"
-        self.project_path = path
-        self.write_json(path)
-        self._status(f"저장됨: {os.path.basename(path)}")
-
-    def _on_open_file(self, sender, app_data):
-        path = app_data["file_path_name"]
+    # ---------------------------------------------------------------- 파일 다이얼로그(윈도우 기본)
+    def _file_dialog(self, save, default=""):
+        res = os.path.join(BASE, "_file_result.json")
         try:
-            with open(path, encoding="utf-8") as f:
-                self.load_dict(json.load(f))
-            self.project_path = path
-            self._status(f"열림: {os.path.basename(path)}")
-        except Exception as e:
-            self._status(f"열기 실패: {e}")
+            os.remove(res)
+        except OSError:
+            pass
+        arg = "--save-dialog" if save else "--open-dialog"
+        extra = [arg, "--json", res, "--out-dir", BASE]
+        if default:
+            extra += ["--default", default]
+        try:
+            subprocess.run(self._snip_cmd(extra), check=False)
+        finally:
+            restore_window()
+        if not os.path.exists(res):
+            return None
+        try:
+            with open(res, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return None
+        return None if d.get("cancelled") else d.get("path")
 
     def menu_save(self):
         if self.project_path:
             self.write_json(self.project_path)
             self._status(f"저장됨: {os.path.basename(self.project_path)}")
         else:
-            dpg.show_item("savedlg")
+            self.menu_save_as()
 
     def menu_save_as(self):
-        dpg.show_item("savedlg")
+        p = self._file_dialog(True, "flow.json")
+        if not p:
+            return
+        if not p.lower().endswith(".json"):
+            p += ".json"
+        self.project_path = p
+        self.write_json(p)
+        self._status(f"저장됨: {os.path.basename(p)}")
 
     def menu_open(self):
-        dpg.show_item("opendlg")
+        p = self._file_dialog(False)
+        if not p:
+            return
+        try:
+            with open(p, encoding="utf-8") as f:
+                self.load_dict(json.load(f))
+            self.project_path = p
+            self._status(f"열림: {os.path.basename(p)}")
+        except Exception as e:
+            self._status(f"열기 실패: {e}")
 
     # ---------------------------------------------------------------- 실행
     def _runner_cmd(self, path, dry):
@@ -671,16 +749,6 @@ class Editor:
                              tag="set.minimize", default_value=False)
             dpg.add_separator()
             dpg.add_button(label="닫기", callback=lambda: dpg.hide_item("settingswin"))
-
-    def build_dialogs(self):
-        with dpg.file_dialog(directory_selector=False, show=False, tag="savedlg",
-                             callback=self._on_save_file, width=640, height=420,
-                             default_path=BASE, default_filename="flow"):
-            dpg.add_file_extension(".json")
-        with dpg.file_dialog(directory_selector=False, show=False, tag="opendlg",
-                             callback=self._on_open_file, width=640, height=420,
-                             default_path=BASE):
-            dpg.add_file_extension(".json")
 
     # ---------------------------------------------------------------- 창 선택
     def build_winpicker(self):
@@ -840,7 +908,6 @@ class Editor:
 
     def build(self):
         self._setup_font()
-        self.build_dialogs()
         self.build_settings_window()
         self.build_winpicker()
         self.build_keymap_window()
@@ -865,6 +932,7 @@ class Editor:
                     dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self._add_node("phase"))
                     dpg.add_menu_item(label="+ 반복(횟수) 노드", callback=lambda: self._add_node("loop"))
                     dpg.add_menu_item(label="+ 딜레이 노드", callback=lambda: self._add_node("delay"))
+                    dpg.add_menu_item(label="+ 마우스 이동 노드", callback=lambda: self._add_node("move"))
                     dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self._add_node("end"))
                 dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
                 dpg.add_menu_item(label="키매핑", callback=lambda: dpg.show_item("keymapwin"))
@@ -887,6 +955,7 @@ class Editor:
             dpg.add_selectable(label="페이즈 (이미지/텍스트)", callback=lambda: self._add_node("phase"))
             dpg.add_selectable(label="반복 (횟수)", callback=lambda: self._add_node("loop"))
             dpg.add_selectable(label="딜레이", callback=lambda: self._add_node("delay"))
+            dpg.add_selectable(label="마우스 이동", callback=lambda: self._add_node("move"))
             dpg.add_selectable(label="종료", callback=lambda: self._add_node("end"))
 
         with dpg.handler_registry():

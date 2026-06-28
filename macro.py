@@ -23,6 +23,7 @@ import ctypes
 import json
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -136,6 +137,9 @@ class Phase:
     click_offset: tuple = (0, 0)    # 중심에서 클릭 위치 보정(px)
     find_timeout: float = None      # 개별 타임아웃
     max_click_retries: int = None   # 개별 재클릭 횟수(None이면 settings 값)
+    click_enabled: bool = True      # False면 '감지만'(클릭/사라짐검증 안 함, 분기용)
+    scan_interval: float = None     # 이 노드의 검사 간격(초). None/0이면 settings 값
+    click_random: int = 0           # 클릭 시 ±N px 랜덤 오프셋
     template: object = field(default=None, repr=False)  # 로드된 템플릿 이미지(런타임)
 
 
@@ -399,17 +403,26 @@ def detect(phase: Phase, st: Settings, screen: Screen):
 
 
 def wait_present(phase, st, screen, timeout):
-    """대상이 나타날 때까지 대기. 반환: (point|None, last_score)"""
+    """대상이 나타날 때까지 대기. 반환: (point|None, last_score).
+    검사 간격은 phase.scan_interval(있으면) -> 없으면 settings.search_interval."""
+    interval = phase.scan_interval if phase.scan_interval else st.search_interval
     deadline = time.monotonic() + timeout
     last = 0.0
-    while time.monotonic() < deadline:
+    while True:
         check_abort()
         found, pt, score = detect(phase, st, screen)
         last = score
         if found:
             return pt, score
-        time.sleep(st.search_interval)
-    return None, last
+        if time.monotonic() >= deadline:
+            return None, last
+        # 검사 간격만큼 대기(중간에 정지 키 반응하도록 잘게 나눔)
+        slept = 0.0
+        while slept < interval and time.monotonic() < deadline:
+            check_abort()
+            step = min(0.2, interval - slept)
+            time.sleep(step)
+            slept += step
 
 
 def wait_absent(phase, st, screen, timeout):
@@ -427,9 +440,14 @@ def wait_absent(phase, st, screen, timeout):
 def do_click(point, phase, st):
     x = point[0] + phase.click_offset[0]
     y = point[1] + phase.click_offset[1]
+    if phase.click_random:
+        r = int(phase.click_random)
+        x += random.randint(-r, r)
+        y += random.randint(-r, r)
     pyautogui.moveTo(x, y, duration=st.move_duration)
     pyautogui.click()
-    log.info("    클릭 -> (%d, %d)", x, y)
+    log.info("    클릭 -> (%d, %d)%s", x, y,
+             f"  (랜덤±{phase.click_random})" if phase.click_random else "")
 
 
 # ============================================================================
@@ -546,6 +564,10 @@ def execute_phase(phase, st, screen, dry_run=False, save_dbg=False):
     if save_dbg:
         save_debug(screen, phase, point, score, "found")
 
+    if not phase.click_enabled:
+        log.info("    감지만(클릭 안 함) -> 성공")
+        return True
+
     if dry_run:
         log.info("    [DRY-RUN] 클릭 생략")
         return True
@@ -631,6 +653,9 @@ def _node_to_phase(node):
         click_offset=tuple(node.get("click_offset", (0, 0))),
         find_timeout=node.get("find_timeout"),
         max_click_retries=node.get("max_click_retries"),
+        click_enabled=node.get("click", True),
+        scan_interval=node.get("scan_interval") or None,
+        click_random=int(node.get("click_random", 0) or 0),
     )
 
 
@@ -726,7 +751,7 @@ def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False,
     while current is not None:
         check_abort()
         steps += 1
-        if steps > 100000:
+        if steps > 10_000_000:
             log.error("최대 실행 단계 초과 - 무한 루프로 판단해 중단합니다.")
             result = False
             break
@@ -747,10 +772,23 @@ def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False,
             break
 
         elif ntype == "delay":
-            secs = float(node.get("seconds", 1) or 0)
-            log.info("[딜레이] '%s'  %.1f초 대기", name, secs)
+            smin = float(node.get("seconds", 1) or 0)
+            smax = float(node.get("seconds_max", 0) or 0)
+            secs = random.uniform(smin, smax) if smax > smin else smin
+            log.info("[딜레이] '%s'  %.2f초 대기%s", name, secs,
+                     f" (랜덤 {smin}~{smax})" if smax > smin else "")
             if not dry_run:
                 _interruptible_sleep(secs)
+            current = edges.get((current, "next"))
+            if current is None:
+                result = True
+                break
+
+        elif ntype == "move":
+            log.info("[이동] '%s'  화면 중앙으로 마우스 이동", name)
+            if not dry_run:
+                left, top, w, h = screen.current_rect()
+                pyautogui.moveTo(left + w // 2, top + h // 2, duration=st.move_duration)
             current = edges.get((current, "next"))
             if current is None:
                 result = True

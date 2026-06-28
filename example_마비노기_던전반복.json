@@ -1,0 +1,406 @@
+{
+  "settings": {
+    "capture_mode": "window",
+    "target_exe": "MabinogiMobile.exe",
+    "target_title": "",
+    "activate_window": true,
+    "similarity": 0.95,
+    "multiscale": true,
+    "ocr_psm": 6,
+    "search_interval": 0.4,
+    "find_timeout": 30,
+    "max_click_retries": 3,
+    "stop_key": "f12"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "pos": [
+        40,
+        300
+      ]
+    },
+    {
+      "id": "sel",
+      "type": "phase",
+      "pos": [
+        220,
+        300
+      ],
+      "name": "선택됨 클릭",
+      "match": "image",
+      "target": "templates/선택됨.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 30,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "mv1",
+      "type": "move",
+      "pos": [
+        470,
+        300
+      ],
+      "name": "중앙 이동"
+    },
+    {
+      "id": "chk",
+      "type": "phase",
+      "pos": [
+        640,
+        300
+      ],
+      "name": "도전 확인",
+      "match": "image",
+      "target": "templates/도전.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": false,
+      "find_timeout": 3,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "ent",
+      "type": "phase",
+      "pos": [
+        880,
+        180
+      ],
+      "name": "입장하기 클릭",
+      "match": "image",
+      "target": "templates/입장하기.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 30,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "comp",
+      "type": "phase",
+      "pos": [
+        1120,
+        180
+      ],
+      "name": "나침반 클릭",
+      "match": "image",
+      "target": "templates/나침반.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 30,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "mv2",
+      "type": "move",
+      "pos": [
+        1360,
+        180
+      ],
+      "name": "중앙 이동"
+    },
+    {
+      "id": "pb",
+      "type": "phase",
+      "pos": [
+        1560,
+        180
+      ],
+      "name": "skip_boss 확인",
+      "match": "image",
+      "target": "templates/skip_boss.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 2,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "pn",
+      "type": "phase",
+      "pos": [
+        1560,
+        380
+      ],
+      "name": "나침반 확인",
+      "match": "image",
+      "target": "templates/나침반.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 2,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "mv3",
+      "type": "move",
+      "pos": [
+        1360,
+        470
+      ],
+      "name": "중앙 이동(나침반 후)"
+    },
+    {
+      "id": "pc",
+      "type": "phase",
+      "pos": [
+        1560,
+        580
+      ],
+      "name": "클리어 확인",
+      "match": "image",
+      "target": "templates/클리어.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": false,
+      "find_timeout": 2,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "delay10",
+      "type": "delay",
+      "pos": [
+        1340,
+        650
+      ],
+      "name": "10초 대기",
+      "seconds": 10,
+      "seconds_max": 0
+    },
+    {
+      "id": "wait13",
+      "type": "delay",
+      "pos": [
+        1820,
+        580
+      ],
+      "name": "1~3초 랜덤",
+      "seconds": 1,
+      "seconds_max": 3
+    },
+    {
+      "id": "clrclk",
+      "type": "phase",
+      "pos": [
+        2040,
+        580
+      ],
+      "name": "클리어 클릭(랜덤)",
+      "match": "image",
+      "target": "templates/클리어.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 30,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 100,
+      "similarity": 0.95
+    },
+    {
+      "id": "sclr",
+      "type": "phase",
+      "pos": [
+        2280,
+        580
+      ],
+      "name": "skip_clear 확인",
+      "match": "image",
+      "target": "templates/skip_clear.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 3,
+      "scan_interval": null,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "retry",
+      "type": "phase",
+      "pos": [
+        2520,
+        580
+      ],
+      "name": "다시하기 대기",
+      "match": "image",
+      "target": "templates/다시하기.png",
+      "region": null,
+      "verify_disappear": false,
+      "click": true,
+      "find_timeout": 120,
+      "scan_interval": 10,
+      "max_click_retries": 3,
+      "click_random": 0,
+      "similarity": 0.95
+    },
+    {
+      "id": "endfail",
+      "type": "end",
+      "pos": [
+        2520,
+        300
+      ],
+      "result": "fail"
+    }
+  ],
+  "links": [
+    {
+      "from": "start",
+      "port": "out",
+      "to": "sel"
+    },
+    {
+      "from": "sel",
+      "port": "success",
+      "to": "mv1"
+    },
+    {
+      "from": "sel",
+      "port": "fail",
+      "to": "sel"
+    },
+    {
+      "from": "mv1",
+      "port": "next",
+      "to": "chk"
+    },
+    {
+      "from": "chk",
+      "port": "success",
+      "to": "ent"
+    },
+    {
+      "from": "chk",
+      "port": "fail",
+      "to": "sel"
+    },
+    {
+      "from": "ent",
+      "port": "success",
+      "to": "comp"
+    },
+    {
+      "from": "ent",
+      "port": "fail",
+      "to": "sel"
+    },
+    {
+      "from": "comp",
+      "port": "success",
+      "to": "mv2"
+    },
+    {
+      "from": "comp",
+      "port": "fail",
+      "to": "mv2"
+    },
+    {
+      "from": "mv2",
+      "port": "next",
+      "to": "pb"
+    },
+    {
+      "from": "pb",
+      "port": "success",
+      "to": "pn"
+    },
+    {
+      "from": "pb",
+      "port": "fail",
+      "to": "pn"
+    },
+    {
+      "from": "pn",
+      "port": "success",
+      "to": "mv3"
+    },
+    {
+      "from": "pn",
+      "port": "fail",
+      "to": "pc"
+    },
+    {
+      "from": "mv3",
+      "port": "next",
+      "to": "pb"
+    },
+    {
+      "from": "pc",
+      "port": "success",
+      "to": "wait13"
+    },
+    {
+      "from": "pc",
+      "port": "fail",
+      "to": "delay10"
+    },
+    {
+      "from": "delay10",
+      "port": "next",
+      "to": "pb"
+    },
+    {
+      "from": "wait13",
+      "port": "next",
+      "to": "clrclk"
+    },
+    {
+      "from": "clrclk",
+      "port": "success",
+      "to": "sclr"
+    },
+    {
+      "from": "clrclk",
+      "port": "fail",
+      "to": "sclr"
+    },
+    {
+      "from": "sclr",
+      "port": "success",
+      "to": "retry"
+    },
+    {
+      "from": "sclr",
+      "port": "fail",
+      "to": "retry"
+    },
+    {
+      "from": "retry",
+      "port": "success",
+      "to": "sel"
+    },
+    {
+      "from": "retry",
+      "port": "fail",
+      "to": "sel"
+    }
+  ],
+  "keymaps": []
+}

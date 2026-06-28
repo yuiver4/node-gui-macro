@@ -169,9 +169,36 @@ def main():
                     help="영역 캡처 대신 한글 텍스트 입력 창을 띄운다")
     ap.add_argument("--point", action="store_true",
                     help="클릭 한 번으로 화면 좌표 반환(키매핑 위치 지정용)")
+    ap.add_argument("--save-dialog", dest="save_dialog", action="store_true",
+                    help="윈도우 기본 '다른 이름으로 저장' 다이얼로그")
+    ap.add_argument("--open-dialog", dest="open_dialog", action="store_true",
+                    help="윈도우 기본 '열기' 다이얼로그")
     ap.add_argument("--prompt", default="텍스트 입력", help="입력 창 안내 문구")
     ap.add_argument("--default", dest="default_text", default="", help="입력 기본값")
     args = ap.parse_args()
+
+    # 윈도우 기본 파일 다이얼로그 (저장/열기)
+    if args.save_dialog or args.open_dialog:
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        initdir = args.out_dir if (args.out_dir and os.path.isdir(args.out_dir)) else None
+        ftypes = [("ImgMacro 흐름", "*.json"), ("모든 파일", "*.*")]
+        if args.save_dialog:
+            path = filedialog.asksaveasfilename(parent=root, defaultextension=".json",
+                                                filetypes=ftypes, initialdir=initdir,
+                                                initialfile=(args.default_text or "flow.json"))
+        else:
+            path = filedialog.askopenfilename(parent=root, filetypes=ftypes, initialdir=initdir)
+        root.destroy()
+        out = {"cancelled": not path, "path": path or None}
+        if args.json_out:
+            with open(args.json_out, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False)
+        else:
+            print(out)
+        return
 
     # 단일 클릭 좌표 캡처 모드
     if args.point:

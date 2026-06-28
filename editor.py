@@ -521,27 +521,28 @@ class Editor:
         self.build_dialogs()
         self.build_settings_window()
 
-        with dpg.window(tag="main"):
-            with dpg.group(horizontal=True):
-                dpg.add_text("준비됨. 노드를 추가하고 선으로 연결하세요.", tag="statusbar")
+        with dpg.window(tag="main", menubar=True):
+            with dpg.menu_bar():
+                with dpg.menu(label="파일"):
+                    dpg.add_menu_item(label="새로 만들기",
+                                      callback=lambda: self.clear() or self.add_start_node())
+                    dpg.add_menu_item(label="열기...", callback=self.menu_open)
+                    dpg.add_menu_item(label="저장", callback=self.menu_save)
+                    dpg.add_menu_item(label="다른 이름으로 저장...", callback=self.menu_save_as)
+                with dpg.menu(label="추가"):
+                    dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self.add_phase_node())
+                    dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self.add_end_node())
+                dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
+                dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
+                dpg.add_menu_item(label="▶ 실행", callback=lambda: self.run_macro(False))
+                dpg.add_menu_item(label="미리보기(클릭 없음)", callback=lambda: self.run_macro(True))
+
+            dpg.add_text("준비됨. [추가] 메뉴로 노드를 만들고 포트를 선으로 연결하세요.",
+                         tag="statusbar")
             with dpg.node_editor(tag="editor", callback=self._on_link,
                                  delink_callback=self._on_delink, minimap=True,
                                  minimap_location=dpg.mvNodeMiniMap_Location_BottomRight):
                 self.add_start_node()
-
-        with dpg.viewport_menu_bar():
-            with dpg.menu(label="파일"):
-                dpg.add_menu_item(label="새로 만들기", callback=lambda: self.clear() or self.add_start_node())
-                dpg.add_menu_item(label="열기...", callback=self.menu_open)
-                dpg.add_menu_item(label="저장", callback=self.menu_save)
-                dpg.add_menu_item(label="다른 이름으로 저장...", callback=self.menu_save_as)
-            with dpg.menu(label="추가"):
-                dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self.add_phase_node())
-                dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self.add_end_node())
-            dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
-            dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
-            dpg.add_menu_item(label="실행", callback=lambda: self.run_macro(False))
-            dpg.add_menu_item(label="미리보기(클릭없음)", callback=lambda: self.run_macro(True))
 
         with dpg.handler_registry():
             dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self._delete_selected)

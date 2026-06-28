@@ -7,7 +7,7 @@ Shader Graph 처럼 노드를 만들고 선으로 흐름을 잇는다.
   [시작] -> [페이즈] --성공--> [페이즈] --성공--> [성공 종료]
                   └--실패--> [실패 종료] 등 원하는 곳으로
 각 페이즈 노드:
-  - 📷 캡처 버튼으로 화면 영역을 드래그 -> 템플릿 자동 등록
+  - 캡처 버튼으로 화면 영역을 드래그 -> 템플릿 자동 등록
   - 또는 '텍스트' 방식으로 찾을 문구 입력 (한글 OCR)
   - '성공' / '실패' 출력 포트를 다음 노드로 연결
 저장하면 macro 엔진이 실행하는 .json 그래프가 만들어진다.
@@ -67,11 +67,11 @@ class Editor:
         return [80 + (k % 6) * 60, 90 + (k % 6) * 50]
 
     def add_start_node(self, pos=None):
-        with dpg.node(label="● 시작", tag="start", pos=pos or [40, 220],
+        with dpg.node(label="시작", tag="start", pos=pos or [40, 220],
                       parent="editor"):
             with dpg.node_attribute(tag="start.out",
                                     attribute_type=dpg.mvNode_Attr_Output):
-                dpg.add_text("시작 ▶")
+                dpg.add_text("시작 >")
         self.nodes["start"] = {"id": "start", "type": "start", "node_tag": "start"}
 
     def add_phase_node(self, data=None, pos=None):
@@ -80,11 +80,11 @@ class Editor:
         self.counter += 1
         is_text = data.get("match") == "text"
         match_label = "텍스트" if is_text else "이미지"
-        with dpg.node(label="◆ 페이즈", tag=nid, pos=pos or self._new_pos(),
+        with dpg.node(label="페이즈", tag=nid, pos=pos or self._new_pos(),
                       parent="editor"):
             with dpg.node_attribute(tag=f"{nid}.in",
                                     attribute_type=dpg.mvNode_Attr_Input):
-                dpg.add_text("◀ 이전")
+                dpg.add_text("이전")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_input_text(tag=f"{nid}.name", width=210,
                                    default_value=data.get("name", "새 페이즈"),
@@ -99,7 +99,7 @@ class Editor:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static,
                                     tag=f"{nid}.imgrow"):
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label="📷 캡처", width=80,
+                    dpg.add_button(label="캡처", width=80,
                                    callback=self._capture, user_data=nid)
                     lbl = os.path.basename(data.get("target", "")) if not is_text else ""
                     dpg.add_text(lbl or "(미캡처)", tag=f"{nid}.imglabel")
@@ -131,16 +131,16 @@ class Editor:
                                       default_value=int(data.get("max_click_retries") or 3))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label="🔲 영역", width=64,
+                    dpg.add_button(label="영역", width=64,
                                    callback=self._capture_region, user_data=nid)
                     dpg.add_text(self._region_label(data.get("region")),
                                  tag=f"{nid}.regionlabel")
             with dpg.node_attribute(tag=f"{nid}.success",
                                     attribute_type=dpg.mvNode_Attr_Output):
-                dpg.add_text("성공 ▶")
+                dpg.add_text("성공 >")
             with dpg.node_attribute(tag=f"{nid}.fail",
                                     attribute_type=dpg.mvNode_Attr_Output):
-                dpg.add_text("실패 ▶")
+                dpg.add_text("실패 >")
         self.nodes[nid] = {"id": nid, "type": "phase", "node_tag": nid,
                            "target": data.get("target", "") if not is_text else "",
                            "region": data.get("region")}
@@ -152,11 +152,11 @@ class Editor:
         nid = data.get("id") or f"end{self.end_counter}"
         self.end_counter += 1
         res_label = "실패 종료" if data.get("result") == "fail" else "성공 종료"
-        with dpg.node(label="■ 종료", tag=nid, pos=pos or self._new_pos(),
+        with dpg.node(label="종료", tag=nid, pos=pos or self._new_pos(),
                       parent="editor"):
             with dpg.node_attribute(tag=f"{nid}.in",
                                     attribute_type=dpg.mvNode_Attr_Input):
-                dpg.add_text("◀ 이전")
+                dpg.add_text("이전")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_combo(["성공 종료", "실패 종료"], tag=f"{nid}.result",
                               default_value=res_label, width=150)
@@ -503,7 +503,21 @@ class Editor:
                              default_path=BASE):
             dpg.add_file_extension(".json")
 
+    def _setup_font(self):
+        """DearPyGui 기본 폰트는 한글 글리프가 없어 깨진다. 한글 글꼴을 기본으로 바인딩.
+        (DPG 2.x 는 폰트의 글리프 범위를 자동 포함하므로 등록 후 바인딩만 하면 된다.)"""
+        cands = [r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunsl.ttf",
+                 r"C:\Windows\Fonts\gulim.ttc", r"C:\Windows\Fonts\batang.ttc",
+                 r"C:\Windows\Fonts\NanumGothic.ttf"]
+        path = next((p for p in cands if os.path.exists(p)), None)
+        if not path:
+            return
+        with dpg.font_registry():
+            kfont = dpg.add_font(path, 17)
+        dpg.bind_font(kfont)
+
     def build(self):
+        self._setup_font()
         self.build_dialogs()
         self.build_settings_window()
 
@@ -522,11 +536,11 @@ class Editor:
                 dpg.add_menu_item(label="저장", callback=self.menu_save)
                 dpg.add_menu_item(label="다른 이름으로 저장...", callback=self.menu_save_as)
             with dpg.menu(label="추가"):
-                dpg.add_menu_item(label="＋ 페이즈 노드", callback=lambda: self.add_phase_node())
-                dpg.add_menu_item(label="＋ 종료 노드", callback=lambda: self.add_end_node())
+                dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self.add_phase_node())
+                dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self.add_end_node())
             dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
             dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
-            dpg.add_menu_item(label="▶ 실행", callback=lambda: self.run_macro(False))
+            dpg.add_menu_item(label="실행", callback=lambda: self.run_macro(False))
             dpg.add_menu_item(label="미리보기(클릭없음)", callback=lambda: self.run_macro(True))
 
         with dpg.handler_registry():

@@ -95,6 +95,31 @@ def select_region():
     return state["result"]
 
 
+def select_point():
+    """전체화면 오버레이에서 한 번 클릭한 화면 좌표(x, y)를 반환. 취소 시 None."""
+    root = tk.Tk()
+    root.attributes("-fullscreen", True)
+    root.attributes("-alpha", 0.25)
+    root.configure(bg="black")
+    root.attributes("-topmost", True)
+    root.config(cursor="cross")
+    canvas = tk.Canvas(root, highlightthickness=0, bg="black")
+    canvas.pack(fill="both", expand=True)
+    canvas.create_text(root.winfo_screenwidth() // 2, 40,
+                       text="클릭할 위치를 한 번 클릭하세요  (ESC: 취소)",
+                       fill="white", font=("맑은 고딕", 18))
+    res = {"point": None}
+
+    def on_click(e):
+        res["point"] = (e.x_root, e.y_root)
+        root.destroy()
+
+    canvas.bind("<ButtonPress-1>", on_click)
+    root.bind("<Escape>", lambda _e: root.destroy())
+    root.mainloop()
+    return res["point"]
+
+
 def text_input_dialog(prompt, default):
     """네이티브 Tkinter 입력 창 (DPG 입력칸과 달리 한글 IME 정상). (cancelled, text) 반환."""
     root = tk.Tk()
@@ -142,9 +167,22 @@ def main():
                     help="이미지는 저장하지 않고 영역 좌표만 반환")
     ap.add_argument("--text-input", dest="text_input", action="store_true",
                     help="영역 캡처 대신 한글 텍스트 입력 창을 띄운다")
+    ap.add_argument("--point", action="store_true",
+                    help="클릭 한 번으로 화면 좌표 반환(키매핑 위치 지정용)")
     ap.add_argument("--prompt", default="텍스트 입력", help="입력 창 안내 문구")
     ap.add_argument("--default", dest="default_text", default="", help="입력 기본값")
     args = ap.parse_args()
+
+    # 단일 클릭 좌표 캡처 모드
+    if args.point:
+        pt = select_point()
+        out = {"cancelled": pt is None, "point": list(pt) if pt else None}
+        if args.json_out:
+            with open(args.json_out, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False)
+        else:
+            print(out)
+        return
 
     # 한글 텍스트 입력 모드 (DPG 입력칸의 한글 깨짐 우회)
     if args.text_input:

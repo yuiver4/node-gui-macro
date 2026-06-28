@@ -113,6 +113,10 @@ class Settings:
     max_click_retries: int = 3       # 사라지지 않을 때 재클릭 횟수
     move_duration: float = 0.15      # 마우스 이동 시간(초). 0이면 즉시 이동
     monitor: int = 1                 # 캡처 대상 모니터 (1=주모니터, 0=전체 가상화면)
+    capture_mode: str = "monitor"    # monitor(전체화면) | window(특정 창)
+    target_exe: str = ""             # window 모드: 대상 프로세스 exe (예: MabinogiMobile.exe)
+    target_title: str = ""           # window 모드: 대상 창 제목(부분일치, 선택)
+    activate_window: bool = True     # 실행 시 대상 창을 앞으로 가져오기
     stop_key: str = "f12"            # 비상 정지 단축키
     tesseract_cmd: str = ""          # tesseract.exe 경로(비우면 자동 탐색)
     on_fail: str = "abort"           # 페이즈 실패 시: abort(중단) | skip(건너뜀)
@@ -186,23 +190,77 @@ def check_abort():
 # 화면 캡처
 # ============================================================================
 class Screen:
-    """mss 인스턴스를 재사용하여 지정 모니터를 BGR 이미지로 캡처한다."""
+    """모니터 또는 특정 창(클라이언트 영역)을 BGR 이미지로 캡처한다.
+    창 모드는 매 grab 마다 위치를 다시 조회해 창이 움직여도 따라간다."""
 
-    def __init__(self, monitor_index: int):
+    def __init__(self, monitor_index=1, window=None, activate=False):
         self._sct = mss.MSS()
-        mons = self._sct.monitors
-        if monitor_index < 0 or monitor_index >= len(mons):
-            log.warning("모니터 인덱스 %d 가 범위를 벗어나 1로 대체합니다.", monitor_index)
-            monitor_index = 1 if len(mons) > 1 else 0
-        self.mon = mons[monitor_index]
-        self.offset = (self.mon["left"], self.mon["top"])
-        log.info("캡처 모니터 #%d  영역=%sx%s  오프셋=%s",
-                 monitor_index, self.mon["width"], self.mon["height"], self.offset)
+        self.window = window  # {"exe","title"} 또는 None
+        self.hwnd = None
+        if window:
+            import winutil
+            self.hwnd = winutil.find_window(window.get("exe"), window.get("title"))
+            if not self.hwnd:
+                raise RuntimeError(
+                    "대상 창을 찾을 수 없습니다 (exe=%s, title=%s). 창이 열려 있는지 확인하세요."
+                    % (window.get("exe"), window.get("title")))
+            if activate:
+                winutil.activate(self.hwnd)
+                time.sleep(0.3)
+            rect = winutil.client_rect(self.hwnd)
+            if rect is None:
+                raise RuntimeError("대상 창이 최소화되어 있거나 크기를 읽을 수 없습니다.")
+            self._set_rect(rect)
+            log.info("캡처 대상 창: %s '%s'  영역=%dx%d  오프셋=%s",
+                     window.get("exe"), window.get("title"), rect[2], rect[3], self.offset)
+        else:
+            mons = self._sct.monitors
+            if monitor_index < 0 or monitor_index >= len(mons):
+                log.warning("모니터 인덱스 %d 가 범위를 벗어나 1로 대체합니다.", monitor_index)
+                monitor_index = 1 if len(mons) > 1 else 0
+            self.mon = mons[monitor_index]
+            self.offset = (self.mon["left"], self.mon["top"])
+            log.info("캡처 모니터 #%d  영역=%sx%s  오프셋=%s",
+                     monitor_index, self.mon["width"], self.mon["height"], self.offset)
+
+    def _set_rect(self, rect):
+        self.mon = {"left": rect[0], "top": rect[1], "width": rect[2], "height": rect[3]}
+        self.offset = (rect[0], rect[1])
+
+    def _refresh_rect(self):
+        """창 모드면 현재 위치/크기를 다시 조회. 못 잡으면 False."""
+        if not self.window:
+            return True
+        import winutil
+        rect = winutil.client_rect(self.hwnd)
+        if rect is None:  # 최소화/닫힘/이동 -> 창 재탐색
+            hw = winutil.find_window(self.window.get("exe"), self.window.get("title"))
+            if hw:
+                self.hwnd = hw
+                rect = winutil.client_rect(hw)
+        if rect is None:
+            return False
+        self._set_rect(rect)
+        return True
 
     def grab(self):
+        if not self._refresh_rect():
+            return np.zeros((4, 4, 3), np.uint8)  # 못 잡으면 빈 화면(이번 탐지 실패)
         shot = self._sct.grab(self.mon)
-        img = np.array(shot)                       # BGRA
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
+
+    def current_rect(self):
+        """현재 캡처 대상의 (left, top, width, height)."""
+        self._refresh_rect()
+        return (self.offset[0], self.offset[1], self.mon["width"], self.mon["height"])
+
+
+def make_screen(st):
+    """설정에 따라 모니터/창 캡처 Screen 을 만든다."""
+    if getattr(st, "capture_mode", "monitor") == "window":
+        return Screen(window={"exe": st.target_exe, "title": st.target_title},
+                      activate=st.activate_window)
+    return Screen(st.monitor)
 
 
 # ============================================================================
@@ -518,7 +576,7 @@ def execute_phase(phase, st, screen, dry_run=False, save_dbg=False):
 # 선형(리스트) 실행 루프 - 기존 config.yaml 호환
 # ============================================================================
 def run(st, phases, dry_run=False, save_dbg=False):
-    screen = Screen(st.monitor)
+    screen = make_screen(st)
     _start_stop_listener(st.stop_key)
 
     log.info("=" * 60)
@@ -646,7 +704,7 @@ def _interruptible_sleep(seconds):
 def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False,
               progress_path=None):
     templates = templates or {}
-    screen = Screen(st.monitor)
+    screen = make_screen(st)
     _start_stop_listener(st.stop_key)
 
     start = next(n for n in nodes.values() if n.get("type") == "start")
@@ -740,6 +798,64 @@ def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False,
 
 
 # ============================================================================
+# 키매핑 (앱플레이어식: 단축키 -> 대상 창의 비율 위치 클릭)
+# ============================================================================
+def _key_to_str(key):
+    try:
+        from pynput import keyboard
+        if isinstance(key, keyboard.KeyCode) and key.char:
+            return key.char.lower()
+        if isinstance(key, keyboard.Key):
+            return key.name.lower()
+    except Exception:
+        pass
+    return str(key).lower()
+
+
+def run_keymap(st, keymaps):
+    from pynput import keyboard
+    # 키매핑 비율은 '대상 창' 기준이므로 대상 창이 있으면 창 모드 강제
+    if st.target_exe and st.capture_mode != "window":
+        st.capture_mode = "window"
+    screen = make_screen(st)
+    mapping = {}
+    for km in keymaps:
+        k = str(km.get("key", "")).strip().lower()
+        if k:
+            mapping[k] = km
+    if not mapping:
+        log.error("키매핑이 비어 있습니다.")
+        return
+    stop = st.stop_key.strip().lower()
+    log.info("=" * 60)
+    log.info("키매핑 모드 시작 (%d개). 정지: '%s' 키 또는 Ctrl+C", len(mapping), stop)
+    for k, km in mapping.items():
+        log.info("  [%s] -> 비율(%.3f, %.3f) %s", k, float(km.get("x", 0)),
+                 float(km.get("y", 0)), km.get("button", "left"))
+    log.info("=" * 60)
+
+    def on_press(key):
+        ks = _key_to_str(key)
+        if ks == stop:
+            log.info("정지 키 감지 -> 종료")
+            return False
+        km = mapping.get(ks)
+        if not km:
+            return
+        left, top, w, h = screen.current_rect()
+        x = int(left + float(km.get("x", 0)) * w)
+        y = int(top + float(km.get("y", 0)) * h)
+        try:
+            pyautogui.click(x, y, button=km.get("button", "left"))
+            log.info("키 '%s' -> 클릭 (%d, %d)", ks, x, y)
+        except Exception as e:
+            log.error("클릭 실패: %s", e)
+
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
+
+
+# ============================================================================
 # 보조 모드 (모니터 목록 / 즉석 탐지 테스트)
 # ============================================================================
 def list_monitors():
@@ -752,7 +868,7 @@ def list_monitors():
 
 def probe(st, image_path=None, text=None):
     """현재 화면에서 한 번 탐지해 결과를 출력 (임계값 튜닝용)."""
-    screen = Screen(st.monitor)
+    screen = make_screen(st)
     if image_path:
         tpl = imread_u(image_path, cv2.IMREAD_COLOR)
         if tpl is None:
@@ -784,6 +900,7 @@ def main():
     ap.add_argument("--probe-text", metavar="STR", help="텍스트 1회 탐지 테스트")
     ap.add_argument("--ocr-image", metavar="IMG", help="이미지 파일을 OCR 해 인식 텍스트 출력(번들 OCR 점검용)")
     ap.add_argument("--progress", metavar="JSON", help="현재 실행 노드를 이 파일에 기록(에디터 하이라이트용)")
+    ap.add_argument("--keymap", action="store_true", help="키매핑 모드로 실행(매크로 대신 단축키->클릭)")
     args = ap.parse_args()
 
     # 윈도우 콘솔에서 한글이 깨지지 않도록 UTF-8 로 출력
@@ -834,6 +951,26 @@ def main():
     if args.probe_image or args.probe_text:
         st = _load_settings_any(args.config)
         probe(st, args.probe_image, args.probe_text)
+        return
+
+    # 키매핑 모드 (매크로 실행 대신)
+    if args.keymap:
+        st = _load_settings_any(args.config)
+        try:
+            with open(args.config, encoding="utf-8") as f:
+                keymaps = json.load(f).get("keymaps", [])
+        except Exception as e:
+            log.error("키매핑 로드 실패: %s", e)
+            sys.exit(1)
+        if not keymaps:
+            log.error("키매핑(keymaps)이 없습니다. 에디터의 [키매핑]에서 추가하세요.")
+            sys.exit(1)
+        try:
+            run_keymap(st, keymaps)
+        except (AbortException, KeyboardInterrupt):
+            log.warning("키매핑 중단됨")
+        except pyautogui.FailSafeException:
+            log.warning("FAILSAFE 로 중단됨")
         return
 
     is_graph = str(args.config).lower().endswith(".json")

@@ -29,6 +29,7 @@ RTHOOK = os.path.join(ROOT, "rthook_silence.py")
 
 COMMON = [
     "--noconfirm", "--clean", "--onefile",
+    "--paths", ROOT,
     "--runtime-hook", RTHOOK,
     "--exclude-module", "matplotlib",
     "--exclude-module", "scipy",
@@ -41,9 +42,10 @@ COMMON = [
 # (스크립트, exe이름, 추가옵션)
 TARGETS = [
     ("macro.py", "ImgMacro", ["--console", "--collect-all", "numpy",
-                              "--collect-submodules", "pynput"]),
+                              "--collect-submodules", "pynput", "--hidden-import", "winutil"]),
     ("snip.py", "Snip", ["--windowed", "--collect-all", "numpy"]),
-    ("editor.py", "Editor", ["--windowed", "--collect-all", "dearpygui"]),
+    ("editor.py", "Editor", ["--windowed", "--collect-all", "dearpygui",
+                             "--hidden-import", "winutil"]),
 ]
 
 

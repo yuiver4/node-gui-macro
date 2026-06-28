@@ -22,6 +22,11 @@ warnings.filterwarnings("ignore")
 
 import dearpygui.dearpygui as dpg
 
+try:
+    import winutil
+except Exception:
+    winutil = None
+
 TITLE = "ImgMacro Editor"
 
 
@@ -65,6 +70,10 @@ class Editor:
         self.progress_path = None
         self.zoom = 1.0
         self._hl = None           # 현재 하이라이트된 노드
+        self.target_exe = ""      # 대상 창(window 모드)
+        self.target_title = ""
+        self.km_rows = {}         # 키매핑 행: kid -> {"x","y"}
+        self.km_counter = 1
 
     # ---------------------------------------------------------------- 노드
     def _new_pos(self):
@@ -410,6 +419,11 @@ class Editor:
             "post_click_delay": dpg.get_value("set.post_click_delay"),
             "max_click_retries": dpg.get_value("set.max_click_retries"),
             "stop_key": dpg.get_value("set.stop_key"),
+            "capture_mode": ("window" if dpg.does_item_exist("set.capture_mode")
+                             and dpg.get_value("set.capture_mode") == "특정 창" else "monitor"),
+            "target_exe": self.target_exe,
+            "target_title": self.target_title,
+            "activate_window": (dpg.get_value("set.activate") if dpg.does_item_exist("set.activate") else True),
         }
 
     def serialize(self):
@@ -448,7 +462,8 @@ class Editor:
         for lid, (src, dst) in self.links.items():
             snid, port = src.rsplit(".", 1)
             links.append({"from": snid, "port": port, "to": dst.rsplit(".", 1)[0]})
-        return {"settings": self.gather_settings(), "nodes": nodes, "links": links}
+        return {"settings": self.gather_settings(), "nodes": nodes, "links": links,
+                "keymaps": self._gather_keymaps()}
 
     def write_json(self, path):
         with open(path, "w", encoding="utf-8") as f:
@@ -471,6 +486,10 @@ class Editor:
         self.end_counter = 1
         self.loop_counter = 1
         self.delay_counter = 1
+        if dpg.does_item_exist("keymaprows"):
+            dpg.delete_item("keymaprows", children_only=True)
+        self.km_rows.clear()
+        self.km_counter = 1
 
     def load_dict(self, data):
         self.clear()
@@ -501,6 +520,9 @@ class Editor:
                 lid = dpg.add_node_link(src, dst, parent="editor")
                 self.links[lid] = (src, dst)
                 self.out_link[src] = lid
+        # 키매핑 복원
+        for km in data.get("keymaps", []):
+            self._add_keymap_row(km)
 
     def _apply_settings(self, s):
         def setv(tag, val):
@@ -520,6 +542,15 @@ class Editor:
         setv("set.post_click_delay", s.get("post_click_delay"))
         setv("set.max_click_retries", s.get("max_click_retries"))
         setv("set.stop_key", s.get("stop_key"))
+        setv("set.activate", s.get("activate_window"))
+        # 대상 창 복원
+        self.target_exe = s.get("target_exe", "") or ""
+        self.target_title = s.get("target_title", "") or ""
+        if s.get("capture_mode") == "window":
+            setv("set.capture_mode", "특정 창")
+        if self.target_exe and dpg.does_item_exist("set.target_label"):
+            dpg.set_value("set.target_label",
+                          f"대상: {self.target_exe} | {self.target_title[:24]}")
 
     # ---------------------------------------------------------------- 파일 다이얼로그
     def _on_save_file(self, sender, app_data):
@@ -601,7 +632,16 @@ class Editor:
     # ---------------------------------------------------------------- UI 구성
     def build_settings_window(self):
         with dpg.window(label="전역 설정", tag="settingswin", show=False,
-                        width=380, height=460, pos=[300, 120]):
+                        width=420, height=580, pos=[280, 80]):
+            dpg.add_text("캡처 대상")
+            dpg.add_combo(["전체화면(모니터)", "특정 창"], tag="set.capture_mode",
+                          default_value="전체화면(모니터)", width=200)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="창 선택...", callback=self._open_winpicker)
+                dpg.add_text("대상: (없음)", tag="set.target_label")
+            dpg.add_checkbox(label="실행 시 대상 창 앞으로 가져오기", tag="set.activate",
+                             default_value=True)
+            dpg.add_separator()
             dpg.add_input_int(label="모니터(1=주)", tag="set.monitor", default_value=1, width=120)
             dpg.add_checkbox(label="멀티스케일(배율 다른 PC 대응)", tag="set.multiscale",
                              default_value=True)
@@ -642,6 +682,149 @@ class Editor:
                              default_path=BASE):
             dpg.add_file_extension(".json")
 
+    # ---------------------------------------------------------------- 창 선택
+    def build_winpicker(self):
+        with dpg.window(label="창 선택", tag="winpicker", show=False, width=540, height=470,
+                        pos=[320, 120]):
+            dpg.add_text("대상 창을 고르세요  (프로세스 | 제목)")
+            dpg.add_button(label="새로고침", callback=self._open_winpicker)
+            dpg.add_separator()
+            with dpg.child_window(tag="winlist", autosize_x=True, height=-1):
+                pass
+
+    def _open_winpicker(self):
+        if winutil is None:
+            self._status("창 열거 모듈을 사용할 수 없습니다.")
+            return
+        if dpg.does_item_exist("winlist"):
+            dpg.delete_item("winlist", children_only=True)
+        try:
+            wins = winutil.list_windows()
+        except Exception as e:
+            dpg.add_text(f"창 목록 오류: {e}", parent="winlist")
+            dpg.configure_item("winpicker", show=True)
+            return
+        for w in wins:
+            label = f"{w['exe']}  |  {w['title'][:46]}"
+            dpg.add_selectable(label=label, parent="winlist",
+                               user_data=(w["exe"], w["title"]), callback=self._pick_window)
+        dpg.configure_item("winpicker", show=True)
+
+    def _pick_window(self, sender, app_data, user_data):
+        self.target_exe, self.target_title = user_data
+        if dpg.does_item_exist("set.target_label"):
+            dpg.set_value("set.target_label",
+                          f"대상: {self.target_exe} | {self.target_title[:24]}")
+        if dpg.does_item_exist("set.capture_mode"):
+            dpg.set_value("set.capture_mode", "특정 창")
+        dpg.configure_item("winpicker", show=False)
+        self._status(f"대상 창 지정: {self.target_exe}")
+
+    # ---------------------------------------------------------------- 키매핑
+    def build_keymap_window(self):
+        with dpg.window(label="키매핑 (단축키 -> 클릭)", tag="keymapwin", show=False,
+                        width=560, height=440, pos=[240, 100]):
+            dpg.add_text("[전역 설정]에서 대상 창을 먼저 지정하세요.")
+            dpg.add_text("키를 누르면 그 창의 지정 위치(해상도 비율)를 클릭합니다.")
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="+ 행 추가", callback=lambda: self._add_keymap_row())
+                dpg.add_button(label="키매핑 시작", callback=self._run_keymap)
+                dpg.add_button(label="저장", callback=self.menu_save)
+            dpg.add_separator()
+            with dpg.child_window(tag="keymaprows", autosize_x=True, height=-1):
+                pass
+
+    @staticmethod
+    def _km_label(r):
+        if r and r.get("x") is not None:
+            return f"비율 {r['x']:.3f}, {r['y']:.3f}"
+        return "(위치 미지정)"
+
+    def _add_keymap_row(self, data=None):
+        data = data or {}
+        kid = f"km{self.km_counter}"
+        self.km_counter += 1
+        r = {"x": data.get("x"), "y": data.get("y")}
+        self.km_rows[kid] = r
+        with dpg.group(horizontal=True, parent="keymaprows", tag=kid + "_g"):
+            dpg.add_text("키")
+            dpg.add_input_text(tag=kid + ".key", width=80, hint="q, f1, space",
+                               default_value=str(data.get("key", "")))
+            dpg.add_button(label="위치 지정", callback=self._capture_km_point, user_data=kid)
+            dpg.add_text(self._km_label(r), tag=kid + ".pos")
+            dpg.add_button(label="X", callback=self._del_km_row, user_data=kid)
+
+    def _del_km_row(self, sender, app_data, user_data):
+        kid = user_data
+        if dpg.does_item_exist(kid + "_g"):
+            dpg.delete_item(kid + "_g")
+        self.km_rows.pop(kid, None)
+
+    def _capture_km_point(self, sender, app_data, user_data):
+        kid = user_data
+        if winutil is None or not self.target_exe:
+            dpg.set_value(kid + ".pos", "먼저 대상 창 지정")
+            return
+        hwnd = winutil.find_window(self.target_exe, self.target_title)
+        rect = winutil.client_rect(hwnd) if hwnd else None
+        if not rect:
+            dpg.set_value(kid + ".pos", "대상 창 못 찾음")
+            return
+        res = os.path.join(BASE, "_point.json")
+        try:
+            os.remove(res)
+        except OSError:
+            pass
+        try:
+            subprocess.run(self._snip_cmd(["--point", "--json", res]), check=False)
+        finally:
+            restore_window()
+        if not os.path.exists(res):
+            return
+        try:
+            with open(res, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return
+        if not d.get("cancelled") and d.get("point"):
+            px, py = d["point"]
+            left, top, w, h = rect
+            x = max(0.0, min(1.0, (px - left) / w))
+            y = max(0.0, min(1.0, (py - top) / h))
+            self.km_rows[kid] = {"x": round(x, 4), "y": round(y, 4)}
+            dpg.set_value(kid + ".pos", f"비율 {x:.3f}, {y:.3f}")
+
+    def _gather_keymaps(self):
+        out = []
+        for kid, r in self.km_rows.items():
+            if not dpg.does_item_exist(kid + ".key"):
+                continue
+            key = dpg.get_value(kid + ".key").strip()
+            if key and r.get("x") is not None:
+                out.append({"key": key, "x": r["x"], "y": r["y"], "button": "left"})
+        return out
+
+    def _run_keymap(self):
+        if not self._gather_keymaps():
+            self._status("키매핑 행을 추가하고 키/위치를 지정하세요.")
+            return
+        if not self.target_exe:
+            self._status("전역 설정에서 대상 창을 먼저 지정하세요.")
+            return
+        if self.run_proc and self.run_proc.poll() is None:
+            self._status("이미 실행 중입니다.")
+            return
+        run_path = os.path.join(BASE, "_run.json")
+        self.write_json(run_path)
+        self.progress_path = None
+        cmd = self._runner_cmd(run_path, False) + ["--keymap"]
+        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        try:
+            self.run_proc = subprocess.Popen(cmd, creationflags=flags)
+            self._status("키매핑 실행 중... 정지 키로 종료. (로그 창 확인)")
+        except Exception as e:
+            self._status(f"키매핑 실행 실패: {e}")
+
     def _setup_font(self):
         """DearPyGui 기본 폰트는 한글 글리프가 없어 깨진다. 한글 글꼴을 기본으로 바인딩.
         (DPG 2.x 는 폰트의 글리프 범위를 자동 포함하므로 등록 후 바인딩만 하면 된다.)"""
@@ -659,6 +842,8 @@ class Editor:
         self._setup_font()
         self.build_dialogs()
         self.build_settings_window()
+        self.build_winpicker()
+        self.build_keymap_window()
         with dpg.theme(tag="hl_theme"):           # 실행 중 현재 노드 강조
             with dpg.theme_component(dpg.mvNode):
                 dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (210, 120, 30),
@@ -682,6 +867,7 @@ class Editor:
                     dpg.add_menu_item(label="+ 딜레이 노드", callback=lambda: self._add_node("delay"))
                     dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self._add_node("end"))
                 dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
+                dpg.add_menu_item(label="키매핑", callback=lambda: dpg.show_item("keymapwin"))
                 dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
                 dpg.add_menu_item(label="▶ 실행", callback=lambda: self.run_macro(False))
                 dpg.add_menu_item(label="미리보기(클릭 없음)", callback=lambda: self.run_macro(True))
@@ -742,6 +928,8 @@ def selftest():
         # 링크 생성 경로까지 점검
         ed._on_link(None, (dpg.get_alias_id("start.out"), dpg.get_alias_id(f"{n1}.in")))
         ed._on_link(None, (dpg.get_alias_id(f"{n1}.success"), dpg.get_alias_id(f"{ln}.in")))
+        ed._add_keymap_row({"key": "q", "x": 0.5, "y": 0.8})  # 키매핑 행
+        ed._open_winpicker()                                  # 창 목록(winutil) 구성
         data = ed.serialize()
         dpg.destroy_context()
         assert any(x["id"] == n1 for x in data["nodes"])
@@ -749,6 +937,7 @@ def selftest():
         assert any(x["type"] == "loop" and x.get("count") == 5 for x in data["nodes"])
         assert any(x["type"] == "delay" for x in data["nodes"])
         assert len(data["links"]) == 2
+        assert data["keymaps"] and data["keymaps"][0]["key"] == "q"
         msg = "SELFTEST OK nodes=%d links=%d" % (len(data["nodes"]), len(data["links"]))
     except Exception as e:
         import traceback

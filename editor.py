@@ -36,7 +36,7 @@ TEMPLATES = os.path.join(BASE, "templates")
 IS_FROZEN = getattr(sys, "frozen", False)
 
 IN_PORT = {"in"}
-OUT_PORT = {"success", "fail", "out"}
+OUT_PORT = {"success", "fail", "out", "loop", "done", "next"}
 
 
 def restore_window(title=TITLE):
@@ -55,11 +55,16 @@ class Editor:
     def __init__(self):
         self.counter = 1          # 노드 id 카운터
         self.end_counter = 1
+        self.loop_counter = 1
+        self.delay_counter = 1
         self.nodes = {}           # nid -> {id,type,node_tag,target,region}
         self.links = {}           # link_id -> (src_attr, dst_attr)
         self.out_link = {}        # src_attr -> link_id (출력당 1개 강제)
         self.run_proc = None
         self.project_path = None
+        self.progress_path = None
+        self.zoom = 1.0
+        self._hl = None           # 현재 하이라이트된 노드
 
     # ---------------------------------------------------------------- 노드
     def _new_pos(self):
@@ -86,9 +91,12 @@ class Editor:
                                     attribute_type=dpg.mvNode_Attr_Input):
                 dpg.add_text("이전")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_input_text(tag=f"{nid}.name", width=210,
-                                   default_value=data.get("name", "새 페이즈"),
-                                   hint="페이즈 이름")
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag=f"{nid}.name", width=150,
+                                       default_value=data.get("name", "새 페이즈"),
+                                       hint="페이즈 이름")
+                    dpg.add_button(label="한글", width=48, callback=self._edit_text,
+                                   user_data=(f"{nid}.name", "페이즈 이름"))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
                     dpg.add_text("방식")
@@ -106,8 +114,11 @@ class Editor:
             # 텍스트 행
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static,
                                     tag=f"{nid}.txtrow"):
-                dpg.add_input_text(tag=f"{nid}.text", width=210, hint="찾을 문구(한/영)",
-                                   default_value=data.get("target", "") if is_text else "")
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag=f"{nid}.text", width=150, hint="찾을 문구",
+                                       default_value=data.get("target", "") if is_text else "")
+                    dpg.add_button(label="한글", width=48, callback=self._edit_text,
+                                   user_data=(f"{nid}.text", "찾을 문구(한글)"))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
                     dpg.add_text("정확도")
@@ -162,6 +173,111 @@ class Editor:
                               default_value=res_label, width=150)
         self.nodes[nid] = {"id": nid, "type": "end", "node_tag": nid}
         return nid
+
+    def add_loop_node(self, data=None, pos=None):
+        """지정 횟수만큼 본문을 반복. '반복' 출력=본문(끝나면 이 노드로 되돌아옴), '완료'=다음."""
+        data = data or {}
+        nid = data.get("id") or f"loop{self.loop_counter}"
+        self.loop_counter += 1
+        with dpg.node(label="반복", tag=nid, pos=pos or self._new_pos(), parent="editor"):
+            with dpg.node_attribute(tag=f"{nid}.in", attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("이전")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("횟수")
+                    dpg.add_input_int(tag=f"{nid}.count", width=100, min_value=1,
+                                      min_clamped=True,
+                                      default_value=int(data.get("count", 3) or 1))
+            with dpg.node_attribute(tag=f"{nid}.loop", attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("반복 >")
+            with dpg.node_attribute(tag=f"{nid}.done", attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("완료 >")
+        self.nodes[nid] = {"id": nid, "type": "loop", "node_tag": nid}
+        return nid
+
+    def add_delay_node(self, data=None, pos=None):
+        data = data or {}
+        nid = data.get("id") or f"delay{self.delay_counter}"
+        self.delay_counter += 1
+        with dpg.node(label="딜레이", tag=nid, pos=pos or self._new_pos(), parent="editor"):
+            with dpg.node_attribute(tag=f"{nid}.in", attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("이전")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("대기(초)")
+                    dpg.add_input_float(tag=f"{nid}.seconds", width=90, step=0,
+                                        format="%.1f",
+                                        default_value=float(data.get("seconds", 1.0) or 0))
+            with dpg.node_attribute(tag=f"{nid}.next", attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("다음 >")
+        self.nodes[nid] = {"id": nid, "type": "delay", "node_tag": nid}
+        return nid
+
+    def _add_node(self, kind):
+        """우클릭 메뉴/메뉴바에서 노드 추가."""
+        {"phase": self.add_phase_node, "end": self.add_end_node,
+         "loop": self.add_loop_node, "delay": self.add_delay_node}[kind]()
+        if dpg.does_item_exist("addmenu"):
+            dpg.configure_item("addmenu", show=False)
+
+    def _edit_text(self, sender, app_data, user_data):
+        """DPG 입력칸은 한글 IME 입력이 깨지므로 네이티브 입력창(Snip --text-input)으로 받는다."""
+        widget, prompt = user_data
+        cur = dpg.get_value(widget) or ""
+        res = os.path.join(BASE, "_text_result.json")
+        try:
+            os.remove(res)
+        except OSError:
+            pass
+        try:
+            subprocess.run(self._snip_cmd(["--text-input", "--json", res,
+                                           "--prompt", prompt, "--default", cur]),
+                           check=False)
+        finally:
+            restore_window()
+        if os.path.exists(res):
+            try:
+                with open(res, encoding="utf-8") as f:
+                    d = json.load(f)
+                if not d.get("cancelled"):
+                    dpg.set_value(widget, d.get("text", ""))
+            except Exception:
+                pass
+
+    def _highlight(self, nid):
+        if self._hl and dpg.does_item_exist(self._hl):
+            dpg.bind_item_theme(self._hl, 0)
+        self._hl = None
+        if nid and dpg.does_item_exist(nid):
+            dpg.bind_item_theme(nid, "hl_theme")
+            self._hl = nid
+
+    def _poll_progress(self):
+        p = self.progress_path
+        if not p or not os.path.exists(p):
+            return
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return
+        cur = d.get("current")
+        if cur != self._hl:
+            self._highlight(cur)
+            if cur:
+                self._status(f"실행 중: {d.get('name', cur)}")
+
+    def _on_wheel(self, sender, app_data):
+        """마우스 휠로 확대/축소 (전역 폰트/위젯 스케일). app_data>0=확대."""
+        self.zoom = max(0.5, min(2.5, self.zoom + (0.1 if app_data > 0 else -0.1)))
+        dpg.set_global_font_scale(round(self.zoom, 2))
+
+    def _on_right_click(self, sender, app_data):
+        """노드 에디터 위에서 우클릭하면 노드 추가 메뉴를 마우스 위치에 띄운다."""
+        if dpg.does_item_exist("editor") and dpg.is_item_hovered("editor"):
+            x, y = dpg.get_mouse_pos(local=False)
+            dpg.set_item_pos("addmenu", [int(x), int(y)])
+            dpg.configure_item("addmenu", show=True)
 
     def _toggle_match(self, sender, app_data, user_data):
         nid = user_data
@@ -319,6 +435,14 @@ class Editor:
                     entry["ocr_confidence"] = thr
             elif n["type"] == "end":
                 entry["result"] = "fail" if dpg.get_value(f"{nid}.result") == "실패 종료" else "success"
+            elif n["type"] == "loop":
+                cnt = int(dpg.get_value(f"{nid}.count"))
+                entry["count"] = cnt
+                entry["name"] = f"반복 {cnt}회"
+            elif n["type"] == "delay":
+                secs = round(float(dpg.get_value(f"{nid}.seconds")), 2)
+                entry["seconds"] = secs
+                entry["name"] = f"딜레이 {secs}초"
             nodes.append(entry)
         links = []
         for lid, (src, dst) in self.links.items():
@@ -342,8 +466,11 @@ class Editor:
         self.nodes.clear()
         self.links.clear()
         self.out_link.clear()
+        self._hl = None
         self.counter = 1
         self.end_counter = 1
+        self.loop_counter = 1
+        self.delay_counter = 1
 
     def load_dict(self, data):
         self.clear()
@@ -360,6 +487,10 @@ class Editor:
                 d = dict(n)
                 d["threshold"] = n.get("similarity", n.get("ocr_confidence"))
                 self.add_phase_node(d, pos)
+            elif t == "loop":
+                self.add_loop_node(n, pos)
+            elif t == "delay":
+                self.add_delay_node(n, pos)
         if "start" not in self.nodes:
             self.add_start_node()
         # 링크 복원
@@ -439,20 +570,26 @@ class Editor:
         if not any(n["type"] == "phase" for n in self.nodes.values()):
             self._status("페이즈 노드가 없습니다.")
             return
-        if ("start", "out") not in {(s.rsplit('.', 1)[0], s.rsplit('.', 1)[1])
-                                    for s, _ in self.links.values()}:
-            self._status("시작 노드를 첫 페이즈에 연결하세요.")
+        if not any(s.startswith("start.") for s, _ in self.links.values()):
+            self._status("시작 노드를 첫 노드에 연결하세요.")
             return
         run_path = os.path.join(BASE, "_run.json")
         self.write_json(run_path)
-        flags = 0
-        if os.name == "nt":
-            flags = subprocess.CREATE_NEW_CONSOLE
+        self.progress_path = os.path.join(BASE, "_progress.json")
         try:
-            dpg.minimize_viewport()
-            self.run_proc = subprocess.Popen(self._runner_cmd(run_path, dry),
-                                             creationflags=flags)
-            self._status("실행 중... (F12 또는 마우스 좌상단으로 정지)")
+            os.remove(self.progress_path)
+        except OSError:
+            pass
+        cmd = self._runner_cmd(run_path, dry) + ["--progress", self.progress_path]
+        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        minimize = dpg.does_item_exist("set.minimize") and dpg.get_value("set.minimize")
+        try:
+            if minimize:
+                dpg.minimize_viewport()
+            else:
+                self._highlight(None)
+            self.run_proc = subprocess.Popen(cmd, creationflags=flags)
+            self._status("실행 중... 현재 노드를 노란색으로 표시합니다. (F12/좌상단 정지)")
         except Exception as e:
             restore_window()
             self._status(f"실행 실패: {e}")
@@ -490,6 +627,8 @@ class Editor:
             dpg.add_input_int(label="재클릭 횟수", tag="set.max_click_retries",
                               default_value=3, width=120)
             dpg.add_input_text(label="정지 단축키", tag="set.stop_key", default_value="f12", width=120)
+            dpg.add_checkbox(label="실행 시 에디터 최소화 (끄면 현재 노드 하이라이트)",
+                             tag="set.minimize", default_value=False)
             dpg.add_separator()
             dpg.add_button(label="닫기", callback=lambda: dpg.hide_item("settingswin"))
 
@@ -520,6 +659,14 @@ class Editor:
         self._setup_font()
         self.build_dialogs()
         self.build_settings_window()
+        with dpg.theme(tag="hl_theme"):           # 실행 중 현재 노드 강조
+            with dpg.theme_component(dpg.mvNode):
+                dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (210, 120, 30),
+                                    category=dpg.mvThemeCat_Nodes)
+                dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, (240, 150, 50),
+                                    category=dpg.mvThemeCat_Nodes)
+                dpg.add_theme_color(dpg.mvNodeCol_TitleBarSelected, (240, 150, 50),
+                                    category=dpg.mvThemeCat_Nodes)
 
         with dpg.window(tag="main", menubar=True):
             with dpg.menu_bar():
@@ -530,29 +677,47 @@ class Editor:
                     dpg.add_menu_item(label="저장", callback=self.menu_save)
                     dpg.add_menu_item(label="다른 이름으로 저장...", callback=self.menu_save_as)
                 with dpg.menu(label="추가"):
-                    dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self.add_phase_node())
-                    dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self.add_end_node())
+                    dpg.add_menu_item(label="+ 페이즈 노드", callback=lambda: self._add_node("phase"))
+                    dpg.add_menu_item(label="+ 반복(횟수) 노드", callback=lambda: self._add_node("loop"))
+                    dpg.add_menu_item(label="+ 딜레이 노드", callback=lambda: self._add_node("delay"))
+                    dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self._add_node("end"))
                 dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
                 dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
                 dpg.add_menu_item(label="▶ 실행", callback=lambda: self.run_macro(False))
                 dpg.add_menu_item(label="미리보기(클릭 없음)", callback=lambda: self.run_macro(True))
 
-            dpg.add_text("준비됨. [추가] 메뉴로 노드를 만들고 포트를 선으로 연결하세요.",
+            dpg.add_text("준비됨. 빈 곳을 우클릭하면 노드 추가 메뉴, 마우스 휠로 확대/축소.",
                          tag="statusbar")
             with dpg.node_editor(tag="editor", callback=self._on_link,
                                  delink_callback=self._on_delink, minimap=True,
                                  minimap_location=dpg.mvNodeMiniMap_Location_BottomRight):
                 self.add_start_node()
 
+        # 노드 에디터 빈 곳 우클릭 -> 노드 추가 메뉴 (팝업 창)
+        with dpg.window(tag="addmenu", show=False, popup=True, no_title_bar=True,
+                        autosize=True):
+            dpg.add_text("노드 추가")
+            dpg.add_separator()
+            dpg.add_selectable(label="페이즈 (이미지/텍스트)", callback=lambda: self._add_node("phase"))
+            dpg.add_selectable(label="반복 (횟수)", callback=lambda: self._add_node("loop"))
+            dpg.add_selectable(label="딜레이", callback=lambda: self._add_node("delay"))
+            dpg.add_selectable(label="종료", callback=lambda: self._add_node("end"))
+
         with dpg.handler_registry():
             dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self._delete_selected)
+            dpg.add_mouse_wheel_handler(callback=self._on_wheel)
+            dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Right,
+                                        callback=self._on_right_click)
 
     def main_loop(self):
         while dpg.is_dearpygui_running():
-            if self.run_proc and self.run_proc.poll() is not None:
-                self.run_proc = None
-                restore_window()
-                self._status("실행 종료. (로그 창에서 결과 확인)")
+            if self.run_proc:
+                self._poll_progress()
+                if self.run_proc.poll() is not None:
+                    self.run_proc = None
+                    self._highlight(None)
+                    restore_window()
+                    self._status("실행 종료. (로그 창에서 결과 확인)")
             dpg.render_dearpygui_frame()
 
 
@@ -565,6 +730,8 @@ def selftest():
         ed = Editor()
         ed.build()
         n1 = ed.add_phase_node({"name": "테스트", "match": "text", "target": "확인"})
+        ln = ed.add_loop_node({"count": 5})
+        ed.add_delay_node({"seconds": 2.0})
         ed.add_end_node({"result": "success"})
         dpg.create_viewport(title=TITLE, width=900, height=600)
         dpg.setup_dearpygui()
@@ -574,11 +741,14 @@ def selftest():
             dpg.render_dearpygui_frame()
         # 링크 생성 경로까지 점검
         ed._on_link(None, (dpg.get_alias_id("start.out"), dpg.get_alias_id(f"{n1}.in")))
+        ed._on_link(None, (dpg.get_alias_id(f"{n1}.success"), dpg.get_alias_id(f"{ln}.in")))
         data = ed.serialize()
         dpg.destroy_context()
         assert any(x["id"] == n1 for x in data["nodes"])
         assert any(x["type"] == "end" for x in data["nodes"])
-        assert len(data["links"]) == 1
+        assert any(x["type"] == "loop" and x.get("count") == 5 for x in data["nodes"])
+        assert any(x["type"] == "delay" for x in data["nodes"])
+        assert len(data["links"]) == 2
         msg = "SELFTEST OK nodes=%d links=%d" % (len(data["nodes"]), len(data["links"]))
     except Exception as e:
         import traceback

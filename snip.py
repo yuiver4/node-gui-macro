@@ -95,6 +95,41 @@ def select_region():
     return state["result"]
 
 
+def text_input_dialog(prompt, default):
+    """네이티브 Tkinter 입력 창 (DPG 입력칸과 달리 한글 IME 정상). (cancelled, text) 반환."""
+    root = tk.Tk()
+    root.title("텍스트 입력")
+    root.attributes("-topmost", True)
+    tk.Label(root, text=prompt, font=("맑은 고딕", 11)).pack(padx=18, pady=(16, 6))
+    var = tk.StringVar(value=default or "")
+    ent = tk.Entry(root, textvariable=var, width=36, font=("맑은 고딕", 14))
+    ent.pack(padx=18)
+    ent.focus_force()
+    ent.icursor("end")
+    state = {"cancelled": True, "text": default or ""}
+
+    def ok(*_):
+        state["cancelled"] = False
+        state["text"] = var.get()
+        root.destroy()
+
+    def cancel(*_):
+        root.destroy()
+
+    fr = tk.Frame(root)
+    fr.pack(pady=14)
+    tk.Button(fr, text="확인", width=8, command=ok).pack(side="left", padx=6)
+    tk.Button(fr, text="취소", width=8, command=cancel).pack(side="left", padx=6)
+    ent.bind("<Return>", ok)
+    root.bind("<Escape>", cancel)
+    root.update_idletasks()
+    w, h = 360, 150
+    root.geometry(f"{w}x{h}+{root.winfo_screenwidth()//2 - w//2}+"
+                  f"{root.winfo_screenheight()//2 - h//2}")
+    root.mainloop()
+    return state["cancelled"], state["text"]
+
+
 def main():
     import argparse
     import json
@@ -105,7 +140,21 @@ def main():
                     help="결과를 이 JSON 파일에 기록(GUI 연동용, 콘솔 프롬프트 없음)")
     ap.add_argument("--no-save", dest="no_save", action="store_true",
                     help="이미지는 저장하지 않고 영역 좌표만 반환")
+    ap.add_argument("--text-input", dest="text_input", action="store_true",
+                    help="영역 캡처 대신 한글 텍스트 입력 창을 띄운다")
+    ap.add_argument("--prompt", default="텍스트 입력", help="입력 창 안내 문구")
+    ap.add_argument("--default", dest="default_text", default="", help="입력 기본값")
     args = ap.parse_args()
+
+    # 한글 텍스트 입력 모드 (DPG 입력칸의 한글 깨짐 우회)
+    if args.text_input:
+        cancelled, text = text_input_dialog(args.prompt, args.default_text)
+        if args.json_out:
+            with open(args.json_out, "w", encoding="utf-8") as f:
+                json.dump({"cancelled": cancelled, "text": text}, f, ensure_ascii=False)
+        else:
+            print(text)
+        return
 
     headless = bool(args.json_out)  # GUI 가 호출한 경우: 프롬프트/print 대신 JSON 기록
     name = args.name

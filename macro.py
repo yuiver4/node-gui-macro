@@ -20,6 +20,7 @@ ImgMacro - 윈도우용 이미지/텍스트 인식 자동 클릭 매크로
 
 import argparse
 import ctypes
+import json
 import logging
 import os
 import sys
@@ -606,8 +607,6 @@ def prepare_graph(nodes, st):
     phase_nodes = [n for n in nodes.values() if n.get("type") == "phase"]
     if not any(n.get("type") == "start" for n in nodes.values()):
         raise ValueError("시작(start) 노드가 없습니다.")
-    if not phase_nodes:
-        raise ValueError("페이즈 노드가 하나도 없습니다.")
     if any(n.get("match") == "text" for n in phase_nodes):
         _setup_tesseract(st)
 
@@ -626,7 +625,26 @@ def prepare_graph(nodes, st):
     return templates
 
 
-def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False):
+def _write_progress(path, data):
+    """현재 실행 중인 노드를 파일로 알린다(에디터 하이라이트용). 실패해도 무시."""
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _interruptible_sleep(seconds):
+    end_t = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < end_t:
+        check_abort()
+        time.sleep(min(0.1, end_t - time.monotonic()))
+
+
+def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False,
+              progress_path=None):
     templates = templates or {}
     screen = Screen(st.monitor)
     _start_stop_listener(st.stop_key)
@@ -641,48 +659,84 @@ def run_graph(st, nodes, edges, templates=None, dry_run=False, save_dbg=False):
 
     current = edges.get((start["id"], "out"))
     if current is None:
-        log.error("시작 노드가 어떤 페이즈에도 연결되어 있지 않습니다.")
+        log.error("시작 노드가 어떤 노드에도 연결되어 있지 않습니다.")
         return False
 
+    loop_counts = {}
     steps = 0
+    result = False
     while current is not None:
         check_abort()
         steps += 1
         if steps > 100000:
             log.error("최대 실행 단계 초과 - 무한 루프로 판단해 중단합니다.")
-            return False
+            result = False
+            break
 
         node = nodes.get(current)
         if node is None:
             log.error("연결된 노드 '%s' 를 찾을 수 없습니다.", current)
-            return False
+            result = False
+            break
 
         ntype = node.get("type")
+        name = node.get("name", current)
+        _write_progress(progress_path, {"current": current, "name": name, "type": ntype})
+
         if ntype == "end":
-            result = node.get("result", "success")
-            ok = (result == "success")
-            log.info("종료 노드 '%s' 도달 -> %s", node.get("name", current),
-                     "성공 종료" if ok else "실패 종료")
-            return ok
+            result = (node.get("result", "success") == "success")
+            log.info("종료 노드 '%s' 도달 -> %s", name, "성공 종료" if result else "실패 종료")
+            break
 
-        if ntype != "phase":
+        elif ntype == "delay":
+            secs = float(node.get("seconds", 1) or 0)
+            log.info("[딜레이] '%s'  %.1f초 대기", name, secs)
+            if not dry_run:
+                _interruptible_sleep(secs)
+            current = edges.get((current, "next"))
+            if current is None:
+                result = True
+                break
+
+        elif ntype == "loop":
+            cnt = int(node.get("count", 1) or 0)
+            c = loop_counts.get(node["id"], 0)
+            if c < cnt:
+                loop_counts[node["id"]] = c + 1
+                log.info("[반복] '%s'  %d/%d 회차", name, c + 1, cnt)
+                nxt = edges.get((current, "loop"))
+            else:
+                loop_counts[node["id"]] = 0  # 바깥 루프 재진입 대비 초기화
+                log.info("[반복] '%s'  %d회 완료", name, cnt)
+                nxt = edges.get((current, "done"))
+            if nxt is None:
+                result = True
+                break
+            current = nxt
+
+        elif ntype == "phase":
+            phase = _node_to_phase(node)
+            phase.template = templates.get(node["id"])
+            tgt = phase.target if phase.type == "text" else os.path.basename(phase.target)
+            log.info("[노드] '%s'  type=%s  대상='%s'", phase.name, phase.type, tgt)
+            ok = execute_phase(phase, st, screen, dry_run, save_dbg)
+            port = "success" if ok else "fail"
+            nxt = edges.get((current, port))
+            if nxt is None:
+                log.info("    '%s' 의 [%s] 출력이 연결되지 않음 -> 매크로 종료(%s)",
+                         phase.name, "성공" if ok else "실패", ok)
+                result = ok
+                break
+            log.info("    -> [%s] 경로로 이동", "성공" if ok else "실패")
+            current = nxt
+
+        else:
             log.error("알 수 없는 노드 타입: %s", ntype)
-            return False
+            result = False
+            break
 
-        phase = _node_to_phase(node)
-        phase.template = templates.get(node["id"])
-        tgt = phase.target if phase.type == "text" else os.path.basename(phase.target)
-        log.info("[노드] '%s'  type=%s  대상='%s'", phase.name, phase.type, tgt)
-
-        ok = execute_phase(phase, st, screen, dry_run, save_dbg)
-        port = "success" if ok else "fail"
-        nxt = edges.get((current, port))
-        if nxt is None:
-            log.info("    '%s' 의 [%s] 출력이 연결되지 않음 -> 매크로 종료(%s)",
-                     phase.name, "성공" if ok else "실패", ok)
-            return ok
-        log.info("    -> [%s] 경로로 이동", "성공" if ok else "실패")
-        current = nxt
+    _write_progress(progress_path, {"current": None, "done": True, "result": result})
+    return result
 
 
 # ============================================================================
@@ -729,6 +783,7 @@ def main():
     ap.add_argument("--probe-image", metavar="PNG", help="이미지 1회 탐지 테스트")
     ap.add_argument("--probe-text", metavar="STR", help="텍스트 1회 탐지 테스트")
     ap.add_argument("--ocr-image", metavar="IMG", help="이미지 파일을 OCR 해 인식 텍스트 출력(번들 OCR 점검용)")
+    ap.add_argument("--progress", metavar="JSON", help="현재 실행 노드를 이 파일에 기록(에디터 하이라이트용)")
     args = ap.parse_args()
 
     # 윈도우 콘솔에서 한글이 깨지지 않도록 UTF-8 로 출력
@@ -799,7 +854,8 @@ def main():
     try:
         if is_graph:
             ok = run_graph(st, nodes, edges, templates,
-                           dry_run=args.dry_run, save_dbg=args.save_debug)
+                           dry_run=args.dry_run, save_dbg=args.save_debug,
+                           progress_path=args.progress)
         else:
             ok = run(st, phases, dry_run=args.dry_run, save_dbg=args.save_debug)
         sys.exit(0 if ok else 2)

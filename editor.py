@@ -16,7 +16,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 import warnings
+from collections import deque
 
 warnings.filterwarnings("ignore")
 
@@ -75,6 +77,10 @@ class Editor:
         self.target_title = ""
         self.km_rows = {}         # 키매핑 행: kid -> {"x","y"}
         self.km_counter = 1
+        self._log_path = os.path.join(BASE, "macro.log")   # 엔진 로그 테일링
+        self._log_pos = 0
+        self._log_last = 0.0
+        self._log_lines = deque(maxlen=400)
 
     # ---------------------------------------------------------------- 노드
     def _new_pos(self):
@@ -95,6 +101,9 @@ class Editor:
         self.counter += 1
         is_text = data.get("match") == "text"
         match_label = "텍스트" if is_text else "이미지"
+        pk = (data.get("press_key") or "").strip()
+        act_label = "키 입력" if pk else ("클릭" if data.get("click", True) else "감지만")
+        cond_label = "없으면" if data.get("condition") == "absent" else "있으면"
         with dpg.node(label="페이즈", tag=nid, pos=pos or self._new_pos(),
                       parent="editor"):
             with dpg.node_attribute(tag=f"{nid}.in",
@@ -139,8 +148,22 @@ class Editor:
                                          default_value=float(dft), format="%.2f")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.group(horizontal=True):
-                    dpg.add_checkbox(label="클릭함", tag=f"{nid}.click",
-                                     default_value=data.get("click", True))
+                    dpg.add_text("조건")
+                    dpg.add_combo(["있으면", "없으면"], tag=f"{nid}.cond",
+                                  default_value=cond_label, width=72)
+                    dpg.add_text("동작")
+                    dpg.add_combo(["클릭", "키 입력", "감지만"], tag=f"{nid}.act",
+                                  default_value=act_label, width=86,
+                                  callback=self._toggle_action, user_data=nid)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static,
+                                    tag=f"{nid}.keyrow"):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("키")
+                    dpg.add_input_text(tag=f"{nid}.key", width=150,
+                                       hint="space, enter, ctrl+c",
+                                       default_value=pk)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.group(horizontal=True):
                     dpg.add_checkbox(label="사라짐확인", tag=f"{nid}.verify",
                                      default_value=data.get("verify_disappear", True))
                     dpg.add_text("랜덤±")
@@ -174,8 +197,15 @@ class Editor:
                            "target": data.get("target", "") if not is_text else "",
                            "region": data.get("region")}
         self._toggle_match(None, match_label, nid)
+        self._toggle_action(None, act_label, nid)
         self._update_imglabel(nid)
         return nid
+
+    def _toggle_action(self, sender, app_data, user_data):
+        nid = user_data
+        act = app_data or dpg.get_value(f"{nid}.act")
+        if dpg.does_item_exist(f"{nid}.keyrow"):
+            dpg.configure_item(f"{nid}.keyrow", show=(act == "키 입력"))
 
     def _update_imglabel(self, nid):
         """이미지 타겟 상태 표시: 정상=초록 파일명, 없음=빨강 '이미지 없음', 미지정=회색."""
@@ -471,6 +501,8 @@ class Editor:
             "target_exe": self.target_exe,
             "target_title": self.target_title,
             "activate_window": (dpg.get_value("set.activate") if dpg.does_item_exist("set.activate") else True),
+            "show_console": (dpg.get_value("set.show_console")
+                             if dpg.does_item_exist("set.show_console") else False),
         }
 
     def serialize(self):
@@ -487,7 +519,11 @@ class Editor:
                     "target": n.get("target", "") if is_img else dpg.get_value(f"{nid}.text"),
                     "region": n.get("region"),
                     "verify_disappear": dpg.get_value(f"{nid}.verify"),
-                    "click": dpg.get_value(f"{nid}.click"),
+                    "click": dpg.get_value(f"{nid}.act") == "클릭",
+                    "press_key": (dpg.get_value(f"{nid}.key").strip()
+                                  if dpg.get_value(f"{nid}.act") == "키 입력" else ""),
+                    "condition": ("absent" if dpg.get_value(f"{nid}.cond") == "없으면"
+                                  else "present"),
                     "find_timeout": dpg.get_value(f"{nid}.timeout"),
                     "scan_interval": (dpg.get_value(f"{nid}.scan") or None),
                     "max_click_retries": dpg.get_value(f"{nid}.retries"),
@@ -600,6 +636,7 @@ class Editor:
         setv("set.max_click_retries", s.get("max_click_retries"))
         setv("set.stop_key", s.get("stop_key"))
         setv("set.activate", s.get("activate_window"))
+        setv("set.show_console", s.get("show_console"))
         # 대상 창 복원
         self.target_exe = s.get("target_exe", "") or ""
         self.target_title = s.get("target_title", "") or ""
@@ -690,18 +727,25 @@ class Editor:
         except OSError:
             pass
         cmd = self._runner_cmd(run_path, dry) + ["--progress", self.progress_path]
-        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
         minimize = dpg.does_item_exist("set.minimize") and dpg.get_value("set.minimize")
         try:
             if minimize:
                 dpg.minimize_viewport()
             else:
                 self._highlight(None)
-            self.run_proc = subprocess.Popen(cmd, creationflags=flags)
-            self._status("실행 중... 현재 노드를 노란색으로 표시합니다. (F12/좌상단 정지)")
+            self._log_begin()
+            self.run_proc = subprocess.Popen(cmd, creationflags=self._run_flags(), cwd=BASE)
+            self._status("실행 중... 진행은 [로그] 창과 노드 하이라이트로 표시. (F12/좌상단 정지)")
         except Exception as e:
             restore_window()
             self._status(f"실행 실패: {e}")
+
+    def _run_flags(self):
+        """기본은 콘솔 숨김(로그는 에디터 [로그] 창). 설정으로 cmd 표시 가능."""
+        if os.name != "nt":
+            return 0
+        show = dpg.does_item_exist("set.show_console") and dpg.get_value("set.show_console")
+        return subprocess.CREATE_NEW_CONSOLE if show else subprocess.CREATE_NO_WINDOW
 
     def _status(self, msg):
         if dpg.does_item_exist("statusbar"):
@@ -747,6 +791,8 @@ class Editor:
             dpg.add_input_text(label="정지 단축키", tag="set.stop_key", default_value="f12", width=120)
             dpg.add_checkbox(label="실행 시 에디터 최소화 (끄면 현재 노드 하이라이트)",
                              tag="set.minimize", default_value=False)
+            dpg.add_checkbox(label="실행 시 콘솔(cmd) 창 표시 (디버그용)",
+                             tag="set.show_console", default_value=False)
             dpg.add_separator()
             dpg.add_button(label="닫기", callback=lambda: dpg.hide_item("settingswin"))
 
@@ -800,6 +846,56 @@ class Editor:
                 dpg.add_button(label="저장", callback=self.menu_save)
             dpg.add_separator()
             with dpg.child_window(tag="keymaprows", autosize_x=True, height=-1):
+                pass
+
+    # ---------------------------------------------------------------- 실행 로그
+    def build_log_window(self):
+        with dpg.window(label="실행 로그", tag="logwin", show=False,
+                        width=820, height=260, pos=[40, 430]):
+            with dpg.child_window(tag="logchild", autosize_x=True, height=-1,
+                                  horizontal_scrollbar=True):
+                dpg.add_text("", tag="logtext")
+
+    def _log_begin(self):
+        """실행 시작 시 로그 테일링 준비: 현재 파일 끝부터 새 내용만 표시."""
+        try:
+            self._log_pos = os.path.getsize(self._log_path)
+        except OSError:
+            self._log_pos = 0
+        self._log_lines.clear()
+        if dpg.does_item_exist("logtext"):
+            dpg.set_value("logtext", "")
+        if dpg.does_item_exist("logwin"):
+            dpg.configure_item("logwin", show=True)
+
+    def _poll_log(self):
+        now = time.time()
+        if now - self._log_last < 0.25:
+            return
+        self._log_last = now
+        try:
+            size = os.path.getsize(self._log_path)
+        except OSError:
+            return
+        if size < self._log_pos:      # 파일이 새로 만들어짐
+            self._log_pos = 0
+        if size == self._log_pos:
+            return
+        try:
+            with open(self._log_path, "rb") as f:
+                f.seek(self._log_pos)
+                data = f.read()
+                self._log_pos = f.tell()
+        except OSError:
+            return
+        for ln in data.decode("utf-8", errors="replace").splitlines():
+            if ln.strip():
+                self._log_lines.append(ln)
+        if dpg.does_item_exist("logtext"):
+            dpg.set_value("logtext", "\n".join(self._log_lines))
+            try:
+                dpg.set_y_scroll("logchild", -1.0)   # 항상 마지막 줄로
+            except Exception:
                 pass
 
     @staticmethod
@@ -886,10 +982,10 @@ class Editor:
         self.write_json(run_path)
         self.progress_path = None
         cmd = self._runner_cmd(run_path, False) + ["--keymap"]
-        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
         try:
-            self.run_proc = subprocess.Popen(cmd, creationflags=flags)
-            self._status("키매핑 실행 중... 정지 키로 종료. (로그 창 확인)")
+            self._log_begin()
+            self.run_proc = subprocess.Popen(cmd, creationflags=self._run_flags(), cwd=BASE)
+            self._status("키매핑 실행 중... 정지 키(F12)로 종료. 진행은 [로그] 창에서.")
         except Exception as e:
             self._status(f"키매핑 실행 실패: {e}")
 
@@ -911,6 +1007,7 @@ class Editor:
         self.build_settings_window()
         self.build_winpicker()
         self.build_keymap_window()
+        self.build_log_window()
         with dpg.theme(tag="hl_theme"):           # 실행 중 현재 노드 강조
             with dpg.theme_component(dpg.mvNode):
                 dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (210, 120, 30),
@@ -936,6 +1033,7 @@ class Editor:
                     dpg.add_menu_item(label="+ 종료 노드", callback=lambda: self._add_node("end"))
                 dpg.add_menu_item(label="전역 설정", callback=lambda: dpg.show_item("settingswin"))
                 dpg.add_menu_item(label="키매핑", callback=lambda: dpg.show_item("keymapwin"))
+                dpg.add_menu_item(label="로그", callback=lambda: dpg.show_item("logwin"))
                 dpg.add_menu_item(label="선택 삭제(Del)", callback=self._delete_selected)
                 dpg.add_menu_item(label="▶ 실행", callback=lambda: self.run_macro(False))
                 dpg.add_menu_item(label="미리보기(클릭 없음)", callback=lambda: self.run_macro(True))
@@ -968,11 +1066,14 @@ class Editor:
         while dpg.is_dearpygui_running():
             if self.run_proc:
                 self._poll_progress()
+                self._poll_log()
                 if self.run_proc.poll() is not None:
                     self.run_proc = None
                     self._highlight(None)
+                    self._log_last = 0.0
+                    self._poll_log()      # 남은 로그 마지막까지 반영
                     restore_window()
-                    self._status("실행 종료. (로그 창에서 결과 확인)")
+                    self._status("실행 종료. ([로그] 창에서 결과 확인)")
             dpg.render_dearpygui_frame()
 
 
@@ -985,6 +1086,9 @@ def selftest():
         ed = Editor()
         ed.build()
         n1 = ed.add_phase_node({"name": "테스트", "match": "text", "target": "확인"})
+        nk = ed.add_phase_node({"name": "키테스트", "match": "text", "target": "퀘스트",
+                                "press_key": "space", "condition": "absent",
+                                "click": False})
         ln = ed.add_loop_node({"count": 5})
         ed.add_delay_node({"seconds": 2.0})
         ed.add_end_node({"result": "success"})
@@ -1007,6 +1111,8 @@ def selftest():
         assert any(x["type"] == "delay" for x in data["nodes"])
         assert len(data["links"]) == 2
         assert data["keymaps"] and data["keymaps"][0]["key"] == "q"
+        knode = next(x for x in data["nodes"] if x["id"] == nk)
+        assert knode["press_key"] == "space" and knode["condition"] == "absent"
         msg = "SELFTEST OK nodes=%d links=%d" % (len(data["nodes"]), len(data["links"]))
     except Exception as e:
         import traceback

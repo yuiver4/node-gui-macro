@@ -140,6 +140,8 @@ class Phase:
     click_enabled: bool = True      # False면 '감지만'(클릭/사라짐검증 안 함, 분기용)
     scan_interval: float = None     # 이 노드의 검사 간격(초). None/0이면 settings 값
     click_random: int = 0           # 클릭 시 ±N px 랜덤 오프셋
+    condition: str = "present"      # present=있으면 통과 | absent=없으면(사라지면) 통과
+    press_key: str = ""             # 지정 시 클릭 대신 키 입력 (예: space, enter, ctrl+c)
     template: object = field(default=None, repr=False)  # 로드된 템플릿 이미지(런타임)
 
 
@@ -425,6 +427,28 @@ def wait_present(phase, st, screen, timeout):
             slept += step
 
 
+def wait_gone(phase, st, screen, timeout):
+    """'없으면' 조건용: 대상이 사라질 때까지 대기(검사 간격은 phase.scan_interval 우선).
+    반환: (gone: bool, last_score)"""
+    interval = phase.scan_interval if phase.scan_interval else st.search_interval
+    deadline = time.monotonic() + timeout
+    last = 0.0
+    while True:
+        check_abort()
+        found, _, score = detect(phase, st, screen)
+        last = score
+        if not found:
+            return True, last
+        if time.monotonic() >= deadline:
+            return False, last
+        slept = 0.0
+        while slept < interval and time.monotonic() < deadline:
+            check_abort()
+            step = min(0.2, interval - slept)
+            time.sleep(step)
+            slept += step
+
+
 def wait_absent(phase, st, screen, timeout):
     """대상이 사라질 때까지 대기. 사라지면 True."""
     deadline = time.monotonic() + timeout
@@ -448,6 +472,22 @@ def do_click(point, phase, st):
     pyautogui.click()
     log.info("    클릭 -> (%d, %d)%s", x, y,
              f"  (랜덤±{phase.click_random})" if phase.click_random else "")
+
+
+def do_action(point, phase, st):
+    """페이즈의 동작 실행: press_key 지정 시 키 입력, 아니면 클릭."""
+    if phase.press_key:
+        keys = [k.strip().lower() for k in phase.press_key.split("+") if k.strip()]
+        try:
+            if len(keys) > 1:
+                pyautogui.hotkey(*keys)
+            else:
+                pyautogui.press(keys[0])
+            log.info("    키 입력 -> %s", phase.press_key)
+        except Exception as e:
+            log.error("    키 입력 실패(%s): %s", phase.press_key, e)
+    elif point is not None:
+        do_click(point, phase, st)
 
 
 # ============================================================================
@@ -554,6 +594,17 @@ def execute_phase(phase, st, screen, dry_run=False, save_dbg=False):
     find_to = phase.find_timeout if phase.find_timeout is not None else st.find_timeout
     retries = phase.max_click_retries if phase.max_click_retries is not None else st.max_click_retries
 
+    # '없으면' 조건: 대상이 사라지면(또는 처음부터 없으면) 통과
+    if phase.condition == "absent":
+        gone, score = wait_gone(phase, st, screen, find_to)
+        if not gone:
+            log.error("    실패: %.0f초 내에도 대상이 남아있음 (점수 %.3f)", find_to, score)
+            return False
+        log.info("    조건 충족: 대상 없음 (마지막 점수 %.3f)", score)
+        if phase.press_key and not dry_run:
+            do_action(None, phase, st)   # 위치가 없으므로 키 입력만 가능
+        return True
+
     point, score = wait_present(phase, st, screen, find_to)
     if point is None:
         log.error("    실패: %.0f초 내 대상을 찾지 못함 (최고 점수 %.3f)", find_to, score)
@@ -564,7 +615,7 @@ def execute_phase(phase, st, screen, dry_run=False, save_dbg=False):
     if save_dbg:
         save_debug(screen, phase, point, score, "found")
 
-    if not phase.click_enabled:
+    if not phase.click_enabled and not phase.press_key:
         log.info("    감지만(클릭 안 함) -> 성공")
         return True
 
@@ -573,7 +624,7 @@ def execute_phase(phase, st, screen, dry_run=False, save_dbg=False):
         return True
 
     for attempt in range(1, max(1, retries) + 1):
-        do_click(point, phase, st)
+        do_action(point, phase, st)
         time.sleep(st.post_click_delay)
 
         if not phase.verify_disappear:
@@ -656,6 +707,8 @@ def _node_to_phase(node):
         click_enabled=node.get("click", True),
         scan_interval=node.get("scan_interval") or None,
         click_random=int(node.get("click_random", 0) or 0),
+        condition=node.get("condition", "present"),
+        press_key=(node.get("press_key") or "").strip(),
     )
 
 
@@ -958,12 +1011,15 @@ def main():
         except Exception:
             pass
 
+    # 콘솔 없이(CREATE_NO_WINDOW) 실행되면 sys.stdout 이 없을 수 있다 -> 파일 로그만
+    handlers = [logging.FileHandler("macro.log", encoding="utf-8")]
+    if sys.stdout:
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout),
-                  logging.FileHandler("macro.log", encoding="utf-8")],
+        handlers=handlers,
     )
 
     if args.list_monitors:
